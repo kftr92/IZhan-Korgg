@@ -1,0 +1,1080 @@
+package com.example
+
+import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.Context
+import android.content.Intent
+import android.media.midi.MidiDevice
+import android.media.midi.MidiDeviceInfo
+import android.media.midi.MidiInputPort
+import android.media.midi.MidiManager
+import android.media.midi.MidiOutputPort
+import android.media.midi.MidiReceiver
+import android.os.Binder
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.ParcelUuid
+import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.io.ByteArrayOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
+
+enum class KorgConnectionStatus {
+    DISCONNECTED,
+    SCANNING,
+    CONNECTING,
+    CONNECTED,
+    ERROR
+}
+
+data class MidiTrafficLog(
+    val id: Long = System.currentTimeMillis() + (0..999).random(),
+    val timestamp: String,
+    val direction: Direction,
+    val summary: String,
+    val hexDump: String
+) {
+    enum class Direction { IN, OUT, SYSTEM }
+}
+
+data class Esp32SlotDump(
+    val slotIndex: Int,
+    val triggerNote: Int,
+    val isCombi: Boolean,
+    val bankMSB: Int,
+    val bankLSB: Int,
+    val progNum: Int,
+    val outChannel: Int,
+    val outNote: Int
+)
+
+class KorgMidiService : Service() {
+
+    companion object {
+        val BLE_MIDI_SERVICE_UUID: UUID = UUID.fromString("03B80E5A-EDE8-4B33-A028-510996E02885")
+        val ESP32_BLE_MIDI_SERVICE_UUID: UUID = UUID.fromString("03b80e5a-ede8-4b33-a751-6ce34ec4c700")
+        val ESP32_BLE_MIDI_CHAR_UUID: UUID = UUID.fromString("7772e5db-3868-4112-a1a9-f2669d106bf3")
+
+        // Custom SysEx Protocol Constants for ESP32-S3
+        const val SYSEX_START: Byte = 0xF0.toByte()
+        const val SYSEX_END: Byte = 0xF7.toByte()
+        const val SYSEX_MANUFACTURER_ID: Byte = 0x7D.toByte() // Educational / Custom MIDI Manufacturer ID
+        const val CMD_ESP32_SAVE_SLOT: Byte = 0x01.toByte()
+        const val CMD_ESP32_DUMP_SLOT: Byte = 0x02.toByte()
+        const val CMD_ESP32_REQ_DUMP: Byte = 0x03.toByte()
+    }
+
+    private val binder = KorgMidiBinder()
+
+    inner class KorgMidiBinder : Binder() {
+        fun getService(): KorgMidiService = this@KorgMidiService
+    }
+
+    private lateinit var midiManager: MidiManager
+    private var bluetoothManager: BluetoothManager? = null
+    private var bluetoothAdapter: BluetoothAdapter? = null
+
+    private val _connectionStatus = MutableStateFlow(KorgConnectionStatus.DISCONNECTED)
+    val connectionStatus: StateFlow<KorgConnectionStatus> = _connectionStatus.asStateFlow()
+
+    private val _statusMessage = MutableStateFlow("MIDI Manager initialized")
+    val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
+
+    private val _availableDevices = MutableStateFlow<List<MidiDeviceInfo>>(emptyList())
+    val availableDevices: StateFlow<List<MidiDeviceInfo>> = _availableDevices.asStateFlow()
+
+    private val _selectedInputDeviceInfo = MutableStateFlow<MidiDeviceInfo?>(null)
+    val selectedInputDeviceInfo: StateFlow<MidiDeviceInfo?> = _selectedInputDeviceInfo.asStateFlow()
+
+    private val _selectedOutputDeviceInfo = MutableStateFlow<MidiDeviceInfo?>(null)
+    val selectedOutputDeviceInfo: StateFlow<MidiDeviceInfo?> = _selectedOutputDeviceInfo.asStateFlow()
+
+    private val _selectedDeviceInfo = MutableStateFlow<MidiDeviceInfo?>(null)
+    val selectedDeviceInfo: StateFlow<MidiDeviceInfo?> = _selectedDeviceInfo.asStateFlow()
+
+    private val _currentPatchInfo = MutableStateFlow<KorgPatchInfo?>(null)
+    val currentPatchInfo: StateFlow<KorgPatchInfo?> = _currentPatchInfo.asStateFlow()
+
+    private val _trafficLogs = MutableStateFlow<List<MidiTrafficLog>>(emptyList())
+    val trafficLogs: StateFlow<List<MidiTrafficLog>> = _trafficLogs.asStateFlow()
+
+    private val _incomingMidiEvent = MutableStateFlow<IncomingMidiInputEvent?>(null)
+    val incomingMidiEvent: StateFlow<IncomingMidiInputEvent?> = _incomingMidiEvent.asStateFlow()
+
+    private val _esp32SlotDump = MutableStateFlow<Esp32SlotDump?>(null)
+    val esp32SlotDump: StateFlow<Esp32SlotDump?> = _esp32SlotDump.asStateFlow()
+
+    private val _scannedBleDevices = MutableStateFlow<List<BleMidiDevice>>(emptyList())
+    val scannedBleDevices: StateFlow<List<BleMidiDevice>> = _scannedBleDevices.asStateFlow()
+
+    private val _isScanningBle = MutableStateFlow(false)
+    val isScanningBle: StateFlow<Boolean> = _isScanningBle.asStateFlow()
+
+    private val _openedBleMidiDevices = mutableMapOf<String, MidiDevice>()
+
+    private var activeInputMidiDevice: MidiDevice? = null
+    private var activeOutputMidiDevice: MidiDevice? = null
+    private var inputPort: MidiInputPort? = null
+    private var outputPort: MidiOutputPort? = null
+
+    private var currentMsb = 0
+    private var currentLsb = 0
+    private var currentMode = "Prog"
+
+    private val sysexAccumulator = ByteArrayOutputStream()
+    private var inSysex = false
+
+    private val timeFormatter = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+
+    private val bleScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult?) {
+            val device = result?.device ?: return
+            val name = try {
+                device.name ?: result.scanRecord?.deviceName ?: "BLE MIDI (${device.address.takeLast(5)})"
+            } catch (e: SecurityException) {
+                "BLE MIDI (${device.address.takeLast(5)})"
+            }
+            val isBonded = try { device.bondState == BluetoothDevice.BOND_BONDED } catch (e: SecurityException) { false }
+            val isConnected = _openedBleMidiDevices.containsKey(device.address)
+
+            val item = BleMidiDevice(
+                device = device,
+                name = name,
+                address = device.address,
+                rssi = result.rssi,
+                isBonded = isBonded,
+                isConnected = isConnected
+            )
+
+            val currentList = _scannedBleDevices.value.toMutableList()
+            val index = currentList.indexOfFirst { it.address == device.address }
+            if (index >= 0) {
+                currentList[index] = item
+            } else {
+                currentList.add(item)
+            }
+            _scannedBleDevices.value = currentList
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Log.e("KorgMidiService", "BLE Scan Failed: $errorCode")
+            _isScanningBle.value = false
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Scan Failed: Error code $errorCode", "")
+        }
+    }
+
+    private val deviceCallback = object : MidiManager.DeviceCallback() {
+        override fun onDeviceAdded(device: MidiDeviceInfo) {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Device Added: ${getDeviceDisplayName(device)}", "")
+            refreshDevices()
+        }
+
+        override fun onDeviceRemoved(device: MidiDeviceInfo) {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Device Removed: ${getDeviceDisplayName(device)}", "")
+            if (_selectedDeviceInfo.value?.id == device.id) {
+                disconnectDevice("Selected MIDI device disconnected")
+            }
+            refreshDevices()
+        }
+    }
+
+    private val midiReceiver = object : MidiReceiver() {
+        override fun onSend(msg: ByteArray?, offset: Int, count: Int, timestamp: Long) {
+            if (msg == null || count <= 0) return
+            val rawBytes = msg.copyOfRange(offset, offset + count)
+            logTraffic(MidiTrafficLog.Direction.IN, "RX (${count} bytes)", bytesToHex(rawBytes))
+            parseIncomingMidiBytes(msg, offset, count)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        midiManager = getSystemService(Context.MIDI_SERVICE) as MidiManager
+        midiManager.registerDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
+        refreshDevices()
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Korg MIDI Manager Service Started", "")
+    }
+
+    override fun onBind(intent: Intent?): IBinder {
+        return binder
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
+    }
+
+    fun refreshDevices() {
+        _connectionStatus.value = KorgConnectionStatus.SCANNING
+        val devices = midiManager.devices.filter { it.inputPortCount > 0 || it.outputPortCount > 0 }
+        _availableDevices.value = devices
+
+        if (devices.isEmpty()) {
+            _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
+            _statusMessage.value = "No MIDI hardware connected"
+            return
+        }
+
+        val autoSelectInput = devices.firstOrNull { it.outputPortCount > 0 && isKorgDevice(it) }
+            ?: devices.firstOrNull { it.outputPortCount > 0 }
+
+        val autoSelectOutput = devices.firstOrNull { it.inputPortCount > 0 && isKorgDevice(it) }
+            ?: devices.firstOrNull { it.inputPortCount > 0 }
+
+        if (_selectedInputDeviceInfo.value == null && autoSelectInput != null) {
+            connectInputDevice(autoSelectInput)
+        }
+
+        if (_selectedOutputDeviceInfo.value == null && autoSelectOutput != null) {
+            connectOutputDevice(autoSelectOutput)
+        }
+
+        if (activeOutputMidiDevice != null || activeInputMidiDevice != null) {
+            _connectionStatus.value = KorgConnectionStatus.CONNECTED
+        } else {
+            _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
+        }
+    }
+
+    fun isKorgDevice(device: MidiDeviceInfo): Boolean {
+        val properties = device.properties
+        val manufacturer = properties.getString(MidiDeviceInfo.PROPERTY_MANUFACTURER) ?: ""
+        val name = properties.getString(MidiDeviceInfo.PROPERTY_NAME) ?: ""
+        val product = properties.getString(MidiDeviceInfo.PROPERTY_PRODUCT) ?: ""
+        val combined = "$manufacturer $name $product".uppercase(Locale.US)
+        return combined.contains("KORG") || combined.contains("KROME") || combined.contains("KRONOS") ||
+                combined.contains("MICROKORG") || combined.contains("MINILOGUE") || combined.contains("TRITON")
+    }
+
+    fun getDeviceDisplayName(device: MidiDeviceInfo): String {
+        val properties = device.properties
+        val product = properties.getString(MidiDeviceInfo.PROPERTY_PRODUCT)
+        val name = properties.getString(MidiDeviceInfo.PROPERTY_NAME)
+        val manufacturer = properties.getString(MidiDeviceInfo.PROPERTY_MANUFACTURER)
+        val baseName = product ?: name ?: manufacturer ?: "MIDI Device #${device.id}"
+        return if (device.type == MidiDeviceInfo.TYPE_BLUETOOTH) {
+            "⚡ BLE: $baseName"
+        } else {
+            baseName
+        }
+    }
+
+    fun startBleScan() {
+        if (_isScanningBle.value) return
+
+        if (bluetoothAdapter == null) {
+            bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            bluetoothAdapter = bluetoothManager?.adapter
+        }
+
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
+            _statusMessage.value = "Bluetooth is disabled"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Scan: Bluetooth is disabled on device", "")
+            return
+        }
+
+        try {
+            // First collect bonded/paired Bluetooth devices
+            val bonded = try {
+                adapter.bondedDevices?.map { dev ->
+                    val devName = try { dev.name ?: dev.address } catch (e: SecurityException) { dev.address }
+                    BleMidiDevice(
+                        device = dev,
+                        name = devName,
+                        address = dev.address,
+                        rssi = -50,
+                        isBonded = true,
+                        isConnected = _openedBleMidiDevices.containsKey(dev.address)
+                    )
+                } ?: emptyList()
+            } catch (e: SecurityException) {
+                emptyList()
+            }
+
+            _scannedBleDevices.value = bonded
+            _isScanningBle.value = true
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Starting BLE MIDI Scan...", "")
+
+            val scanner = adapter.bluetoothLeScanner
+            if (scanner != null) {
+                val filters = listOf(
+                    ScanFilter.Builder().setServiceUuid(ParcelUuid(BLE_MIDI_SERVICE_UUID)).build(),
+                    ScanFilter.Builder().setServiceUuid(ParcelUuid(ESP32_BLE_MIDI_SERVICE_UUID)).build()
+                )
+                val settings = ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .build()
+
+                try {
+                    scanner.startScan(filters, settings, bleScanCallback)
+                } catch (e: Exception) {
+                    scanner.startScan(bleScanCallback)
+                }
+
+                // Auto stop scan after 12 seconds to save battery
+                Handler(Looper.getMainLooper()).postDelayed({
+                    stopBleScan()
+                }, 12000)
+            } else {
+                _isScanningBle.value = false
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Scanner is unavailable", "")
+            }
+        } catch (e: SecurityException) {
+            Log.e("KorgMidiService", "SecurityException during BLE scan", e)
+            _isScanningBle.value = false
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Scan permission required", e.message ?: "")
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error starting BLE scan", e)
+            _isScanningBle.value = false
+        }
+    }
+
+    fun stopBleScan() {
+        if (!_isScanningBle.value) return
+        try {
+            bluetoothAdapter?.bluetoothLeScanner?.stopScan(bleScanCallback)
+        } catch (e: Exception) {
+            // Ignore
+        }
+        _isScanningBle.value = false
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE MIDI Scan Stopped", "")
+    }
+
+    fun connectBleDevice(bluetoothDevice: BluetoothDevice, asInput: Boolean = true, asOutput: Boolean = true) {
+        val devName = try { bluetoothDevice.name ?: bluetoothDevice.address } catch (e: SecurityException) { bluetoothDevice.address }
+        _statusMessage.value = "Connecting to BLE MIDI: $devName..."
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Opening BLE MIDI Device: $devName", bluetoothDevice.address)
+
+        try {
+            midiManager.openBluetoothDevice(bluetoothDevice, { midiDevice ->
+                if (midiDevice != null) {
+                    _openedBleMidiDevices[bluetoothDevice.address] = midiDevice
+                    logTraffic(
+                        MidiTrafficLog.Direction.SYSTEM,
+                        "BLE MIDI Connected: $devName",
+                        "Ports: IN=${midiDevice.info.inputPortCount}, OUT=${midiDevice.info.outputPortCount}"
+                    )
+                    refreshDevices()
+
+                    if (asInput && midiDevice.info.outputPortCount > 0) {
+                        connectInputDevice(midiDevice.info)
+                    }
+                    if (asOutput && midiDevice.info.inputPortCount > 0) {
+                        connectOutputDevice(midiDevice.info)
+                    }
+
+                    _scannedBleDevices.value = _scannedBleDevices.value.map {
+                        if (it.address == bluetoothDevice.address) it.copy(isConnected = true) else it
+                    }
+                    _statusMessage.value = "Connected to BLE: $devName"
+                } else {
+                    _statusMessage.value = "Failed to connect BLE MIDI: $devName"
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open BLE MIDI: $devName", "")
+                }
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error opening BLE MIDI device", e)
+            _statusMessage.value = "BLE Connection Error: ${e.localizedMessage}"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Connection Error", e.localizedMessage ?: "")
+        }
+    }
+
+    fun disconnectBleDevice(bluetoothDevice: BluetoothDevice) {
+        val midiDevice = _openedBleMidiDevices.remove(bluetoothDevice.address)
+        if (midiDevice != null) {
+            if (_selectedInputDeviceInfo.value?.id == midiDevice.info.id) {
+                connectInputDevice(null)
+            }
+            if (_selectedOutputDeviceInfo.value?.id == midiDevice.info.id) {
+                connectOutputDevice(null)
+            }
+            try {
+                midiDevice.close()
+            } catch (e: Exception) {
+                Log.e("KorgMidiService", "Error closing BLE MIDI device", e)
+            }
+        }
+        _scannedBleDevices.value = _scannedBleDevices.value.map {
+            if (it.address == bluetoothDevice.address) it.copy(isConnected = false) else it
+        }
+        refreshDevices()
+    }
+
+    fun connectInputDevice(deviceInfo: MidiDeviceInfo?) {
+        if (deviceInfo == null) {
+            outputPort?.disconnect(midiReceiver)
+            outputPort?.close()
+            outputPort = null
+            if (activeInputMidiDevice != null && activeInputMidiDevice != activeOutputMidiDevice) {
+                activeInputMidiDevice?.close()
+            }
+            activeInputMidiDevice = null
+            _selectedInputDeviceInfo.value = null
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Input MIDI Device Disconnected", "")
+            return
+        }
+
+        if (_selectedInputDeviceInfo.value?.id == deviceInfo.id && activeInputMidiDevice != null && outputPort != null) {
+            return
+        }
+
+        outputPort?.disconnect(midiReceiver)
+        outputPort?.close()
+        outputPort = null
+
+        if (activeInputMidiDevice != null && activeInputMidiDevice != activeOutputMidiDevice) {
+            activeInputMidiDevice?.close()
+        }
+        activeInputMidiDevice = null
+
+        _selectedInputDeviceInfo.value = deviceInfo
+        val name = getDeviceDisplayName(deviceInfo)
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Connecting Input MIDI: $name", "ID: ${deviceInfo.id}")
+
+        if (activeOutputMidiDevice != null && _selectedOutputDeviceInfo.value?.id == deviceInfo.id) {
+            activeInputMidiDevice = activeOutputMidiDevice
+            if (deviceInfo.outputPortCount > 0) {
+                outputPort = activeInputMidiDevice?.openOutputPort(0)
+                outputPort?.connect(midiReceiver)
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "Input MIDI Connected (Shared device): $name", "")
+            }
+        } else {
+            midiManager.openDevice(deviceInfo, { device ->
+                if (device != null) {
+                    activeInputMidiDevice = device
+                    if (deviceInfo.outputPortCount > 0) {
+                        outputPort = device.openOutputPort(0)
+                        outputPort?.connect(midiReceiver)
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Input MIDI Connected: $name", "")
+                    }
+                } else {
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open Input MIDI: $name", "")
+                }
+            }, Handler(Looper.getMainLooper()))
+        }
+    }
+
+    fun connectOutputDevice(deviceInfo: MidiDeviceInfo?) {
+        if (deviceInfo == null) {
+            inputPort?.close()
+            inputPort = null
+            if (activeOutputMidiDevice != null && activeOutputMidiDevice != activeInputMidiDevice) {
+                activeOutputMidiDevice?.close()
+            }
+            activeOutputMidiDevice = null
+            _selectedOutputDeviceInfo.value = null
+            _selectedDeviceInfo.value = null
+            _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Output MIDI Device Disconnected", "")
+            return
+        }
+
+        if (_selectedOutputDeviceInfo.value?.id == deviceInfo.id && activeOutputMidiDevice != null && inputPort != null) {
+            return
+        }
+
+        inputPort?.close()
+        inputPort = null
+
+        if (activeOutputMidiDevice != null && activeOutputMidiDevice != activeInputMidiDevice) {
+            activeOutputMidiDevice?.close()
+        }
+        activeOutputMidiDevice = null
+
+        _selectedOutputDeviceInfo.value = deviceInfo
+        _selectedDeviceInfo.value = deviceInfo
+        _connectionStatus.value = KorgConnectionStatus.CONNECTING
+        val name = getDeviceDisplayName(deviceInfo)
+        _statusMessage.value = "Opening $name..."
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Connecting Output MIDI: $name", "ID: ${deviceInfo.id}")
+
+        if (activeInputMidiDevice != null && _selectedInputDeviceInfo.value?.id == deviceInfo.id) {
+            activeOutputMidiDevice = activeInputMidiDevice
+            if (deviceInfo.inputPortCount > 0) {
+                inputPort = activeOutputMidiDevice?.openInputPort(0)
+                _connectionStatus.value = KorgConnectionStatus.CONNECTED
+                _statusMessage.value = "Connected to $name"
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "Output MIDI Connected (Shared device): $name", "")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    requestCurrentSoundInfo(0)
+                    sendEsp32DumpRequest()
+                }, 350)
+            }
+        } else {
+            midiManager.openDevice(deviceInfo, { device ->
+                if (device != null) {
+                    activeOutputMidiDevice = device
+                    if (deviceInfo.inputPortCount > 0) {
+                        inputPort = device.openInputPort(0)
+                        _connectionStatus.value = KorgConnectionStatus.CONNECTED
+                        _statusMessage.value = "Connected to $name"
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Output MIDI Connected: $name", "")
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            requestCurrentSoundInfo(0)
+                            sendEsp32DumpRequest()
+                        }, 350)
+                    }
+                } else {
+                    _connectionStatus.value = KorgConnectionStatus.ERROR
+                    _statusMessage.value = "Failed to open $name"
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open Output MIDI: $name", "")
+                }
+            }, Handler(Looper.getMainLooper()))
+        }
+    }
+
+    fun connectDevice(deviceInfo: MidiDeviceInfo) {
+        connectInputDevice(deviceInfo)
+        connectOutputDevice(deviceInfo)
+    }
+
+    fun disconnectDevice(reason: String = "User requested disconnect") {
+        inputPort?.close()
+        inputPort = null
+
+        outputPort?.disconnect(midiReceiver)
+        outputPort?.close()
+        outputPort = null
+
+        activeInputMidiDevice?.close()
+        activeInputMidiDevice = null
+
+        activeOutputMidiDevice?.close()
+        activeOutputMidiDevice = null
+
+        _selectedInputDeviceInfo.value = null
+        _selectedOutputDeviceInfo.value = null
+        _selectedDeviceInfo.value = null
+        _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
+        _statusMessage.value = reason
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Disconnected", reason)
+    }
+
+    // --- MIDI TRANSMISSION COMMANDS ---
+
+    fun sendProgramChange(channel: Int, msb: Int, lsb: Int, program: Int) {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Skipped: Port Closed", "Attempted PC $program")
+            return
+        }
+        try {
+            val ch = channel.coerceIn(0, 15)
+
+            // Bank Select MSB (CC 0)
+            val msbBuffer = byteArrayOf((0xB0 or ch).toByte(), 0x00, msb.toByte())
+            port.send(msbBuffer, 0, 3)
+
+            // Bank Select LSB (CC 32)
+            val lsbBuffer = byteArrayOf((0xB0 or ch).toByte(), 0x20, lsb.toByte())
+            port.send(lsbBuffer, 0, 3)
+
+            // Program Change
+            val pcBuffer = byteArrayOf((0xC0 or ch).toByte(), program.toByte())
+            port.send(pcBuffer, 0, 2)
+
+            logTraffic(
+                MidiTrafficLog.Direction.OUT,
+                "TX: Bank MSB $msb LSB $lsb, PC $program (Ch ${ch + 1})",
+                "${bytesToHex(msbBuffer)} ${bytesToHex(lsbBuffer)} ${bytesToHex(pcBuffer)}"
+            )
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending Program Change", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: Program Change", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendNoteOn(channel: Int, note: Int, velocity: Int) {
+        val port = inputPort ?: return
+        try {
+            val ch = channel.coerceIn(0, 15)
+            val buffer = byteArrayOf((0x90 or ch).toByte(), note.coerceIn(0, 127).toByte(), velocity.coerceIn(0, 127).toByte())
+            port.send(buffer, 0, 3)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX: Note On $note Vel $velocity (Ch ${ch + 1})", bytesToHex(buffer))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending Note On", e)
+        }
+    }
+
+    fun sendNoteOff(channel: Int, note: Int) {
+        val port = inputPort ?: return
+        try {
+            val ch = channel.coerceIn(0, 15)
+            val buffer = byteArrayOf((0x80 or ch).toByte(), note.coerceIn(0, 127).toByte(), 0x00)
+            port.send(buffer, 0, 3)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX: Note Off $note (Ch ${ch + 1})", bytesToHex(buffer))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending Note Off", e)
+        }
+    }
+
+    fun sendPitchBend(channel: Int, value: Int) {
+        val port = inputPort ?: return
+        try {
+            val ch = channel.coerceIn(0, 15)
+            val clamped = value.coerceIn(0, 16383)
+            val lsb = (clamped and 0x7F).toByte()
+            val msb = ((clamped shr 7) and 0x7F).toByte()
+            val buffer = byteArrayOf((0xE0 or ch).toByte(), lsb, msb)
+            port.send(buffer, 0, 3)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX: Pitch Bend $clamped (Ch ${ch + 1})", bytesToHex(buffer))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending Pitch Bend", e)
+        }
+    }
+
+    fun sendMasterCoarseTune(channel: Int, transpose: Int) {
+        val port = inputPort ?: return
+        try {
+            val ch = channel.coerceIn(0, 15)
+            val mm = (64 + transpose.coerceIn(-12, 12)).toByte()
+            val sysex = byteArrayOf(
+                0xF0.toByte(), 0x7F.toByte(), ch.toByte(), 0x04.toByte(),
+                0x04.toByte(), 0x00.toByte(), mm, 0xF7.toByte()
+            )
+            port.send(sysex, 0, sysex.size)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX SysEx: Master Transpose ${if (transpose >= 0) "+$transpose" else "$transpose"} semitones", bytesToHex(sysex))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending Transpose SysEx", e)
+        }
+    }
+
+    fun sendModeChange(channel: Int, mode: Int) {
+        val port = inputPort ?: return
+        try {
+            val ch = channel.coerceIn(0, 15)
+            val modeName = if (mode == 0) "Combi" else if (mode == 2) "Prog" else "Seq"
+            val sysex = byteArrayOf(
+                0xF0.toByte(), 0x42.toByte(), (0x30 or ch).toByte(), 0x00.toByte(),
+                0x01.toByte(), 0x15.toByte(), 0x4E.toByte(), mode.toByte(), 0xF7.toByte()
+            )
+            port.send(sysex, 0, sysex.size)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX SysEx: Korg Mode Switch to $modeName", bytesToHex(sysex))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending Mode Change SysEx", e)
+        }
+    }
+
+    fun requestCurrentSoundInfo(channel: Int = 0) {
+        val port = inputPort ?: return
+        try {
+            val ch = (0x30 or (channel and 0x0F)).toByte()
+
+            val modeReq = byteArrayOf(0xF0.toByte(), 0x42.toByte(), ch, 0x00, 0x01, 0x15, 0x12.toByte(), 0xF7.toByte())
+            port.send(modeReq, 0, modeReq.size)
+
+            val progReq = byteArrayOf(0xF0.toByte(), 0x42.toByte(), ch, 0x00, 0x01, 0x15, 0x10.toByte(), 0xF7.toByte())
+            port.send(progReq, 0, progReq.size)
+
+            val currentReq = byteArrayOf(0xF0.toByte(), 0x42.toByte(), ch, 0x00, 0x01, 0x15, 0x1C.toByte(), 0xF7.toByte())
+            port.send(currentReq, 0, currentReq.size)
+
+            val idReq = byteArrayOf(0xF0.toByte(), 0x7E.toByte(), 0x7F.toByte(), 0x06.toByte(), 0x01.toByte(), 0xF7.toByte())
+            port.send(idReq, 0, idReq.size)
+
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX SysEx: Sound & Parameter Info Requests Sent to Korg Hardware", bytesToHex(modeReq))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error requesting sound info SysEx", e)
+        }
+    }
+
+    fun sendEsp32SlotConfig(
+        slotIndex: Int,
+        triggerNote: Int,
+        isCombi: Int,
+        bankMSB: Int,
+        bankLSB: Int,
+        progNum: Int,
+        outChannel: Int,
+        outNote: Int
+    ) {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Save Skipped: Port Closed", "Slot $slotIndex")
+            return
+        }
+        try {
+            val sIdx = slotIndex.coerceIn(0, 11).toByte()
+            val tNote = triggerNote.coerceIn(0, 127).toByte()
+            val combi = (if (isCombi != 0) 1 else 0).toByte()
+            val msb = bankMSB.coerceIn(0, 127).toByte()
+            val lsb = bankLSB.coerceIn(0, 127).toByte()
+            val prog = progNum.coerceIn(0, 127).toByte()
+            val ch = outChannel.coerceIn(0, 15).toByte()
+            val oNote = outNote.coerceIn(0, 127).toByte()
+
+            val sysex = byteArrayOf(
+                SYSEX_START,
+                SYSEX_MANUFACTURER_ID,
+                CMD_ESP32_SAVE_SLOT,
+                sIdx,
+                tNote,
+                combi,
+                msb,
+                lsb,
+                prog,
+                ch,
+                oNote,
+                SYSEX_END
+            )
+            port.send(sysex, 0, sysex.size)
+            logTraffic(
+                MidiTrafficLog.Direction.OUT,
+                "TX ESP32 SysEx: Save Slot ${slotIndex + 1} (TrigNote: $triggerNote, ${if (isCombi == 1) "Combi" else "Prog"} Bank $bankLSB PC $progNum, Ch ${outChannel + 1}, OutNote: $outNote)",
+                bytesToHex(sysex)
+            )
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending ESP32 Save Slot SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Save Slot", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendEsp32DumpRequest() {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Dump Request Skipped: Port Closed", "")
+            return
+        }
+        try {
+            val sysex = byteArrayOf(
+                SYSEX_START,
+                SYSEX_MANUFACTURER_ID,
+                CMD_ESP32_REQ_DUMP,
+                SYSEX_END
+            )
+            port.send(sysex, 0, sysex.size)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX ESP32 SysEx: Request Full Slot Dump (NVS Flash)", bytesToHex(sysex))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending ESP32 Dump Request", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Dump Request", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendSysexHex(hexString: String) {
+        val port = inputPort ?: return
+        try {
+            val cleanHex = hexString.replace(" ", "").replace("0x", "", ignoreCase = true)
+            if (cleanHex.length % 2 != 0 || cleanHex.isEmpty()) return
+            val byteArray = ByteArray(cleanHex.length / 2)
+            for (i in byteArray.indices) {
+                val index = i * 2
+                byteArray[i] = cleanHex.substring(index, index + 2).toInt(16).toByte()
+            }
+            port.send(byteArray, 0, byteArray.size)
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX Custom SysEx (${byteArray.size} bytes)", bytesToHex(byteArray))
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending custom SysEx", e)
+        }
+    }
+
+    fun updatePatchStateLocally(msb: Int, lsb: Int, program: Int, mode: String, customName: String? = null) {
+        currentMsb = msb
+        currentLsb = lsb
+        currentMode = mode
+        _currentPatchInfo.value = KorgPatchInfo(msb, lsb, program, mode, customName)
+    }
+
+    // --- INCOMING MIDI PARSER ---
+
+    private fun parseIncomingMidiBytes(msg: ByteArray, offset: Int, count: Int) {
+        var i = offset
+        val end = offset + count
+
+        while (i < end) {
+            val b = msg[i].toInt() and 0xFF
+
+            if (inSysex) {
+                sysexAccumulator.write(b)
+                if (b == 0xF7) {
+                    inSysex = false
+                    val sysexBytes = sysexAccumulator.toByteArray()
+                    processReceivedSysex(sysexBytes)
+                    sysexAccumulator.reset()
+                }
+                i++
+                continue
+            }
+
+            if (b == 0xF0) {
+                inSysex = true
+                sysexAccumulator.reset()
+                sysexAccumulator.write(b)
+                i++
+                continue
+            }
+
+            if (b >= 0x80) { // Status byte
+                val type = b and 0xF0
+                val ch = b and 0x0F
+                if (type == 0xB0) { // Control Change
+                    if (i + 2 < end) {
+                        val cc = msg[i + 1].toInt() and 0xFF
+                        val value = msg[i + 2].toInt() and 0xFF
+                        if (cc == 0) currentMsb = value
+                        else if (cc == 32) currentLsb = value
+                        logTraffic(MidiTrafficLog.Direction.IN, "RX: CC $cc = $value (Ch ${ch + 1})", "")
+                        _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.CONTROL_CHANGE, cc, value)
+
+                        // Direct forward CC / Modulation to MIDI Output
+                        val port = inputPort
+                        if (port != null) {
+                            try {
+                                val ccBuffer = byteArrayOf((0xB0 or ch).toByte(), cc.toByte(), value.toByte())
+                                port.send(ccBuffer, 0, 3)
+                                if (cc == 1) {
+                                    logTraffic(MidiTrafficLog.Direction.OUT, "Direct Forward Modulation (CC 1=$value, Ch ${ch + 1})", bytesToHex(ccBuffer))
+                                }
+                            } catch (e: Exception) {
+                                Log.e("KorgMidiService", "Error forwarding CC", e)
+                            }
+                        }
+
+                        i += 3
+                    } else break
+                } else if (type == 0xC0) { // Program Change
+                    if (i + 1 < end) {
+                        val pc = msg[i + 1].toInt() and 0xFF
+                        val prevName = _currentPatchInfo.value?.customName
+                        _currentPatchInfo.value = KorgPatchInfo(currentMsb, currentLsb, pc, currentMode, prevName)
+                        logTraffic(MidiTrafficLog.Direction.IN, "RX: Program Change $pc (MSB $currentMsb, LSB $currentLsb)", "")
+                        _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.PROGRAM_CHANGE, pc, 0)
+                        i += 2
+                        requestCurrentSoundInfo(0)
+                    } else break
+                } else if (type == 0x80 || type == 0x90) {
+                    val note = msg.getOrNull(i + 1)?.toInt()?.and(0xFF) ?: 0
+                    val vel = msg.getOrNull(i + 2)?.toInt()?.and(0xFF) ?: 0
+                    val isNoteOn = (type == 0x90 && vel > 0)
+                    val eventType = if (isNoteOn) MidiEventType.NOTE_ON else MidiEventType.NOTE_OFF
+                    val action = if (isNoteOn) "Note On" else "Note Off"
+                    logTraffic(MidiTrafficLog.Direction.IN, "RX: $action Note $note Vel $vel (Ch ${ch + 1})", "")
+                    _incomingMidiEvent.value = IncomingMidiInputEvent(ch, eventType, note, vel)
+                    i += 3
+                } else if (type == 0xA0 || type == 0xE0) {
+                    if (type == 0xE0 && i + 2 < end) {
+                        val lsb = msg[i + 1].toInt() and 0xFF
+                        val msb = msg[i + 2].toInt() and 0xFF
+                        val pbValue = (msb shl 7) or lsb
+                        logTraffic(MidiTrafficLog.Direction.IN, "RX: Pitch Bend $pbValue (Ch ${ch + 1})", "")
+                        _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.PITCH_BEND, pbValue, 0)
+
+                        // Direct forward Pitch Bend to MIDI Output
+                        val port = inputPort
+                        if (port != null) {
+                            try {
+                                val pbBuffer = byteArrayOf((0xE0 or ch).toByte(), lsb.toByte(), msb.toByte())
+                                port.send(pbBuffer, 0, 3)
+                                logTraffic(MidiTrafficLog.Direction.OUT, "Direct Forward Pitch Bend $pbValue (Ch ${ch + 1})", bytesToHex(pbBuffer))
+                            } catch (e: Exception) {
+                                Log.e("KorgMidiService", "Error forwarding Pitch Bend", e)
+                            }
+                        }
+
+                        i += 3
+                    } else {
+                        i += 3
+                    }
+                } else if (type == 0xD0) {
+                    i += 2
+                } else {
+                    i++
+                }
+            } else {
+                i++
+            }
+        }
+    }
+
+    private fun processReceivedSysex(sysexBytes: ByteArray) {
+        if (sysexBytes.size < 4) return
+
+        val b0 = sysexBytes[0].toInt() and 0xFF
+        val b1 = sysexBytes[1].toInt() and 0xFF
+
+        // Check for ESP32 Custom SysEx Protocol (Manufacturer ID 0x7D)
+        if (b0 == 0xF0 && b1 == 0x7D) {
+            val cmd = if (sysexBytes.size > 2) sysexBytes[2].toInt() and 0xFF else 0
+            if (cmd == 0x02 && sysexBytes.size >= 12) {
+                val slotIndex = sysexBytes[3].toInt() and 0x7F
+                val triggerNote = sysexBytes[4].toInt() and 0x7F
+                val isCombi = (sysexBytes[5].toInt() and 0x7F) == 1
+                val bankMSB = sysexBytes[6].toInt() and 0x7F
+                val bankLSB = sysexBytes[7].toInt() and 0x7F
+                val progNum = sysexBytes[8].toInt() and 0x7F
+                val outChannel = sysexBytes[9].toInt() and 0x0F
+                val outNote = sysexBytes[10].toInt() and 0x7F
+
+                val dump = Esp32SlotDump(
+                    slotIndex = slotIndex,
+                    triggerNote = triggerNote,
+                    isCombi = isCombi,
+                    bankMSB = bankMSB,
+                    bankLSB = bankLSB,
+                    progNum = progNum,
+                    outChannel = outChannel,
+                    outNote = outNote
+                )
+                _esp32SlotDump.value = dump
+                logTraffic(
+                    MidiTrafficLog.Direction.IN,
+                    "RX ESP32 SysEx: Slot Dump [Slot ${slotIndex + 1}] -> TrigNote: $triggerNote, ${if (isCombi) "Combi" else "Prog"} Bank $bankLSB PC $progNum, Ch ${outChannel + 1}, OutNote: $outNote",
+                    bytesToHex(sysexBytes)
+                )
+            }
+            return
+        }
+
+        if (b0 == 0xF0 && b1 == 0x42) {
+            var funcId = 0
+            if (sysexBytes.size > 6) {
+                funcId = sysexBytes[6].toInt() and 0xFF
+            }
+
+            if (funcId == 0x42 || funcId == 0x4E || funcId == 0x40 || funcId == 0x4C || funcId == 0x68) {
+                if (sysexBytes.size > 7) {
+                    val mVal = sysexBytes[7].toInt() and 0xFF
+                    currentMode = if (mVal == 0) "Combi" else "Prog"
+                }
+            }
+
+            val extractedName = extractAsciiNameFromSysex(sysexBytes)
+            if (!extractedName.isNullOrBlank()) {
+                val current = _currentPatchInfo.value
+                _currentPatchInfo.value = KorgPatchInfo(
+                    msb = current?.msb ?: currentMsb,
+                    lsb = current?.lsb ?: currentLsb,
+                    program = current?.program ?: 0,
+                    mode = currentMode,
+                    customName = extractedName
+                )
+                logTraffic(MidiTrafficLog.Direction.IN, "RX Korg SysEx: Extracted Sound Name '$extractedName' [$currentMode]", bytesToHex(sysexBytes))
+            }
+        }
+    }
+
+    private fun extractAsciiNameFromSysex(raw: ByteArray): String? {
+        if (raw.size < 8) return null
+
+        for (offset in listOf(7, 6, 5, 4)) {
+            if (raw.size > offset + 4) {
+                val unpacked = unpackKorg7BitPayload(raw, startOffset = offset, endOffset = raw.size - 1)
+                if (unpacked.size >= 16) {
+                    val nameBytes = unpacked.copyOfRange(0, 16)
+                    val candidate = String(nameBytes, Charsets.US_ASCII).trim()
+                    if (isValidSoundName(candidate) && candidate.length >= 2) {
+                        return candidate
+                    }
+                }
+                val scanned = findPrintableAsciiString(unpacked)
+                if (!scanned.isNullOrBlank()) return scanned
+            }
+        }
+
+        return findPrintableAsciiString(raw)
+    }
+
+    private fun findPrintableAsciiString(bytes: ByteArray): String? {
+        var start = -1
+        var len = 0
+        var bestString: String? = null
+
+        for (idx in bytes.indices) {
+            val b = bytes[idx].toInt() and 0xFF
+            if (b in 32..126) {
+                if (start == -1) start = idx
+                len++
+            } else {
+                if (len >= 2 && start != -1) {
+                    val str = String(bytes, start, len, Charsets.US_ASCII).trim()
+                    if (isValidSoundName(str)) {
+                        bestString = str
+                        break
+                    }
+                }
+                start = -1
+                len = 0
+            }
+        }
+        if (bestString == null && len >= 2 && start != -1) {
+            val str = String(bytes, start, len, Charsets.US_ASCII).trim()
+            if (isValidSoundName(str)) {
+                bestString = str
+            }
+        }
+        return bestString
+    }
+
+    private fun isValidSoundName(s: String): Boolean {
+        if (s.length < 2) return false
+        if (s.all { !it.isLetterOrDigit() && it != ' ' && it != '-' && it != '+' && it != '/' && it != '.' }) return false
+        val uppercase = s.uppercase(Locale.US)
+        if (uppercase.contains("KORG") || uppercase.contains("SYSEX") || uppercase.contains("HEADER")) return false
+        return true
+    }
+
+    private fun unpackKorg7BitPayload(raw: ByteArray, startOffset: Int, endOffset: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        var i = startOffset
+        while (i < endOffset) {
+            val controlByte = raw[i].toInt() and 0xFF
+            i++
+            for (bit in 0..6) {
+                if (i >= endOffset) break
+                val dataByte = raw[i].toInt() and 0xFF
+                i++
+                val msb = (controlByte shr bit) and 0x01
+                val fullByte = (msb shl 7) or dataByte
+                out.write(fullByte)
+            }
+        }
+        return out.toByteArray()
+    }
+
+    private fun logTraffic(direction: MidiTrafficLog.Direction, summary: String, hexDump: String) {
+        val timestamp = timeFormatter.format(Date())
+        val newLog = MidiTrafficLog(timestamp = timestamp, direction = direction, summary = summary, hexDump = hexDump)
+
+        val currentList = _trafficLogs.value.toMutableList()
+        if (currentList.size >= 100) {
+            currentList.removeAt(0)
+        }
+        currentList.add(newLog)
+        _trafficLogs.value = currentList
+    }
+
+    fun clearTrafficLogs() {
+        _trafficLogs.value = emptyList()
+    }
+
+    private fun bytesToHex(bytes: ByteArray): String {
+        val sb = StringBuilder()
+        for (b in bytes) {
+            sb.append(String.format("%02X ", b))
+        }
+        return sb.toString().trim()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopBleScan()
+        _openedBleMidiDevices.values.forEach {
+            try { it.close() } catch (e: Exception) {}
+        }
+        _openedBleMidiDevices.clear()
+        disconnectDevice("Service destroyed")
+        try {
+            midiManager.unregisterDeviceCallback(deviceCallback)
+        } catch (e: Exception) {
+            // Ignore
+        }
+    }
+}
