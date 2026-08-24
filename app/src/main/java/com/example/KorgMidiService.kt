@@ -118,6 +118,12 @@ class KorgMidiService : Service() {
     private val _esp32SlotDump = MutableStateFlow<Esp32SlotDump?>(null)
     val esp32SlotDump: StateFlow<Esp32SlotDump?> = _esp32SlotDump.asStateFlow()
 
+    private val _esp32IncomingTranspose = MutableStateFlow<Int?>(null)
+    val esp32IncomingTranspose: StateFlow<Int?> = _esp32IncomingTranspose.asStateFlow()
+
+    private val _esp32IncomingSelectSlot = MutableStateFlow<Int?>(null)
+    val esp32IncomingSelectSlot: StateFlow<Int?> = _esp32IncomingSelectSlot.asStateFlow()
+
     private val _scannedBleDevices = MutableStateFlow<List<BleMidiDevice>>(emptyList())
     val scannedBleDevices: StateFlow<List<BleMidiDevice>> = _scannedBleDevices.asStateFlow()
 
@@ -508,7 +514,8 @@ class KorgMidiService : Service() {
                 inputPort = activeOutputMidiDevice?.openInputPort(0)
                 _connectionStatus.value = KorgConnectionStatus.CONNECTED
                 _statusMessage.value = "Connected to $name"
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "Output MIDI Connected (Shared device): $name", "")
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", name)
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
                 Handler(Looper.getMainLooper()).postDelayed({
                     requestCurrentSoundInfo(0)
                     sendEsp32DumpRequest()
@@ -522,7 +529,8 @@ class KorgMidiService : Service() {
                         inputPort = device.openInputPort(0)
                         _connectionStatus.value = KorgConnectionStatus.CONNECTED
                         _statusMessage.value = "Connected to $name"
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Output MIDI Connected: $name", "")
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", name)
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
                         Handler(Looper.getMainLooper()).postDelayed({
                             requestCurrentSoundInfo(0)
                             sendEsp32DumpRequest()
@@ -732,7 +740,7 @@ class KorgMidiService : Service() {
             port.send(sysex, 0, sysex.size)
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "TX ESP32 SysEx: Save Slot ${slotIndex + 1} (TrigNote: $triggerNote, ${if (isCombi == 1) "Combi" else "Prog"} Bank $bankLSB PC $progNum, Ch ${outChannel + 1}, OutNote: $outNote)",
+                "TX ESP32 SAVE SLOT: ${slotIndex + 1}",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
@@ -754,7 +762,7 @@ class KorgMidiService : Service() {
                 SYSEX_END
             )
             port.send(sysex, 0, sysex.size)
-            logTraffic(MidiTrafficLog.Direction.OUT, "TX ESP32 SysEx: Request Full Slot Dump (NVS Flash)", bytesToHex(sysex))
+            logTraffic(MidiTrafficLog.Direction.OUT, "TX ESP32 REQUEST FULL DUMP", bytesToHex(sysex))
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error sending ESP32 Dump Request", e)
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Dump Request", e.localizedMessage ?: "Unknown error")
@@ -849,12 +857,20 @@ class KorgMidiService : Service() {
             val b = msg[i].toInt() and 0xFF
 
             if (inSysex) {
-                sysexAccumulator.write(b)
                 if (b == 0xF7) {
+                    sysexAccumulator.write(0xF7)
                     inSysex = false
                     val sysexBytes = sysexAccumulator.toByteArray()
                     processReceivedSysex(sysexBytes)
                     sysexAccumulator.reset()
+                } else if (b == 0xF0) {
+                    sysexAccumulator.reset()
+                    sysexAccumulator.write(0xF0)
+                } else if (b < 0x80) {
+                    // Valid 7-bit SysEx payload byte
+                    sysexAccumulator.write(b)
+                } else {
+                    // Skip BLE-MIDI timestamp headers / realtime bytes (>= 0x80) inside SysEx
                 }
                 i++
                 continue
@@ -951,7 +967,10 @@ class KorgMidiService : Service() {
     }
 
     private fun processReceivedSysex(sysexBytes: ByteArray) {
-        if (sysexBytes.size < 4) return
+        if (sysexBytes.size < 4) {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nMalformed SysEx (size < 4)", bytesToHex(sysexBytes))
+            return
+        }
 
         val b0 = sysexBytes[0].toInt() and 0xFF
         val b1 = sysexBytes[1].toInt() and 0xFF
@@ -959,32 +978,60 @@ class KorgMidiService : Service() {
         // Check for ESP32 Custom SysEx Protocol (Manufacturer ID 0x7D)
         if (b0 == 0xF0 && b1 == 0x7D) {
             val cmd = if (sysexBytes.size > 2) sysexBytes[2].toInt() and 0xFF else 0
-            if (cmd == 0x02 && sysexBytes.size >= 12) {
-                val slotIndex = sysexBytes[3].toInt() and 0x7F
-                val triggerNote = sysexBytes[4].toInt() and 0x7F
-                val isCombi = (sysexBytes[5].toInt() and 0x7F) == 1
-                val bankMSB = sysexBytes[6].toInt() and 0x7F
-                val bankLSB = sysexBytes[7].toInt() and 0x7F
-                val progNum = sysexBytes[8].toInt() and 0x7F
-                val outChannel = sysexBytes[9].toInt() and 0x0F
-                val outNote = sysexBytes[10].toInt() and 0x7F
+            when (cmd) {
+                0x01, 0x02 -> { // SAVE_SLOT (0x01) or SLOT_DUMP (0x02)
+                    if (sysexBytes.size >= 12) {
+                        val slotIndex = sysexBytes[3].toInt() and 0x7F
+                        val triggerNote = sysexBytes[4].toInt() and 0x7F
+                        val isCombi = (sysexBytes[5].toInt() and 0x7F) == 1
+                        val bankMSB = sysexBytes[6].toInt() and 0x7F
+                        val bankLSB = sysexBytes[7].toInt() and 0x7F
+                        val progNum = sysexBytes[8].toInt() and 0x7F
+                        val outChannel = sysexBytes[9].toInt() and 0x0F
+                        val outNote = sysexBytes[10].toInt() and 0x7F
 
-                val dump = Esp32SlotDump(
-                    slotIndex = slotIndex,
-                    triggerNote = triggerNote,
-                    isCombi = isCombi,
-                    bankMSB = bankMSB,
-                    bankLSB = bankLSB,
-                    progNum = progNum,
-                    outChannel = outChannel,
-                    outNote = outNote
-                )
-                _esp32SlotDump.value = dump
-                logTraffic(
-                    MidiTrafficLog.Direction.IN,
-                    "RX ESP32 SysEx: Slot Dump [Slot ${slotIndex + 1}] -> TrigNote: $triggerNote, ${if (isCombi) "Combi" else "Prog"} Bank $bankLSB PC $progNum, Ch ${outChannel + 1}, OutNote: $outNote",
-                    bytesToHex(sysexBytes)
-                )
+                        val dump = Esp32SlotDump(
+                            slotIndex = slotIndex,
+                            triggerNote = triggerNote,
+                            isCombi = isCombi,
+                            bankMSB = bankMSB,
+                            bankLSB = bankLSB,
+                            progNum = progNum,
+                            outChannel = outChannel,
+                            outNote = outNote
+                        )
+                        _esp32SlotDump.value = dump
+                        val summary = "[ESP32 BLE RX]\nSLOT ${slotIndex + 1}\nTrigger=$triggerNote\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote"
+                        logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
+                    } else {
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                    }
+                }
+                0x04 -> { // TRANSPOSE (0x04)
+                    if (sysexBytes.size >= 5) {
+                        val encoded = sysexBytes[3].toInt() and 0xFF
+                        val rxTranspose = (encoded - 12).coerceIn(-12, 12)
+                        _esp32IncomingTranspose.value = rxTranspose
+                        val signStr = if (rxTranspose > 0) "+$rxTranspose" else "$rxTranspose"
+                        val summary = "[ESP32 BLE RX]\nTRANSPOSE = $signStr"
+                        logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
+                    } else {
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Transpose Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                    }
+                }
+                0x05 -> { // SELECT_SLOT (0x05)
+                    if (sysexBytes.size >= 5) {
+                        val slot = sysexBytes[3].toInt() and 0x7F
+                        _esp32IncomingSelectSlot.value = slot
+                        val summary = "[ESP32 BLE RX]\nSELECT SLOT = ${slot + 1}"
+                        logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
+                    } else {
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Select Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                    }
+                }
+                else -> {
+                    logTraffic(MidiTrafficLog.Direction.IN, "[ESP32 BLE RX]\nCMD=0x${cmd.toString(16).uppercase()}", bytesToHex(sysexBytes))
+                }
             }
             return
         }
@@ -1095,7 +1142,7 @@ class KorgMidiService : Service() {
         return out.toByteArray()
     }
 
-    private fun logTraffic(direction: MidiTrafficLog.Direction, summary: String, hexDump: String) {
+    fun logTraffic(direction: MidiTrafficLog.Direction, summary: String, hexDump: String) {
         val timestamp = timeFormatter.format(Date())
         val newLog = MidiTrafficLog(timestamp = timestamp, direction = direction, summary = summary, hexDump = hexDump)
 

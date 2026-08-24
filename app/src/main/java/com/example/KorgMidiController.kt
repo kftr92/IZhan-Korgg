@@ -56,6 +56,12 @@ class KorgMidiController(
     private val _esp32SlotDump = MutableStateFlow<Esp32SlotDump?>(null)
     val esp32SlotDump: StateFlow<Esp32SlotDump?> = _esp32SlotDump.asStateFlow()
 
+    private val _esp32IncomingTranspose = MutableStateFlow<Int?>(null)
+    val esp32IncomingTranspose: StateFlow<Int?> = _esp32IncomingTranspose.asStateFlow()
+
+    private val _esp32IncomingSelectSlot = MutableStateFlow<Int?>(null)
+    val esp32IncomingSelectSlot: StateFlow<Int?> = _esp32IncomingSelectSlot.asStateFlow()
+
     private val _scannedBleDevices = MutableStateFlow<List<BleMidiDevice>>(emptyList())
     val scannedBleDevices: StateFlow<List<BleMidiDevice>> = _scannedBleDevices.asStateFlow()
 
@@ -99,6 +105,12 @@ class KorgMidiController(
                 }
                 scope.launch {
                     midiService?.esp32SlotDump?.collect { _esp32SlotDump.value = it }
+                }
+                scope.launch {
+                    midiService?.esp32IncomingTranspose?.collect { _esp32IncomingTranspose.value = it }
+                }
+                scope.launch {
+                    midiService?.esp32IncomingSelectSlot?.collect { _esp32IncomingSelectSlot.value = it }
                 }
                 scope.launch {
                     midiService?.scannedBleDevices?.collect { _scannedBleDevices.value = it }
@@ -226,6 +238,10 @@ class KorgMidiController(
 
     fun clearTrafficLogs() {
         midiService?.clearTrafficLogs()
+    }
+
+    fun logTraffic(direction: MidiTrafficLog.Direction, summary: String, hexDump: String) {
+        midiService?.logTraffic(direction, summary, hexDump)
     }
 
     fun close() {

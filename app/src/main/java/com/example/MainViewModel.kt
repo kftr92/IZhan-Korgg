@@ -91,6 +91,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeInputTriggerPadIndex = MutableStateFlow<Int?>(null)
     val activeInputTriggerPadIndex: StateFlow<Int?> = _activeInputTriggerPadIndex.asStateFlow()
 
+    private val _isSyncingFromEsp32 = MutableStateFlow(false)
+    val isSyncingFromEsp32: StateFlow<Boolean> = _isSyncingFromEsp32.asStateFlow()
+
     private val _lastMidiInputInfo = MutableStateFlow<String?>(null)
     val lastMidiInputInfo: StateFlow<String?> = _lastMidiInputInfo.asStateFlow()
 
@@ -116,42 +119,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+
+        viewModelScope.launch {
+            midiController.esp32IncomingTranspose.collect { rxTranspose ->
+                if (rxTranspose != null) {
+                    _transpose.value = rxTranspose
+                    midiController.sendMasterCoarseTune(_channel.value, rxTranspose)
+                    val signStr = if (rxTranspose > 0) "+$rxTranspose" else "$rxTranspose"
+                    _lastMidiInputInfo.value = "ESP32 Transpose: $signStr"
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            midiController.esp32IncomingSelectSlot.collect { rxSlot ->
+                if (rxSlot != null && rxSlot in _soundPresets.value.indices) {
+                    _selectedPresetIndex.value = rxSlot
+                    _activeInputTriggerPadIndex.value = rxSlot
+                    val targetPreset = _soundPresets.value[rxSlot]
+                    midiController.updateCurrentPatch(
+                        msb = targetPreset.msb,
+                        lsb = targetPreset.lsb,
+                        program = targetPreset.program,
+                        mode = targetPreset.mode,
+                        customName = targetPreset.name
+                    )
+                    triggerSlotToKorg(rxSlot)
+                    viewModelScope.launch {
+                        kotlinx.coroutines.delay(350)
+                        if (_activeInputTriggerPadIndex.value == rxSlot) {
+                            _activeInputTriggerPadIndex.value = null
+                        }
+                    }
+                    _lastMidiInputInfo.value = "Selected Slot ${rxSlot + 1} from ESP32"
+                }
+            }
+        }
     }
 
     private fun handleEsp32SlotDump(dump: Esp32SlotDump) {
         val slotIdx = dump.slotIndex
         if (slotIdx !in 0..15) return
-        val currentList = _soundPresets.value.toMutableList()
-        while (currentList.size <= slotIdx) {
-            currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
-        }
+        _isSyncingFromEsp32.value = true
+        try {
+            val currentList = _soundPresets.value.toMutableList()
+            while (currentList.size <= slotIdx) {
+                currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
+            }
 
-        val currentPreset = currentList[slotIdx]
-        val modeStr = if (dump.isCombi) "Combi" else "Prog"
-        val resolvedName = KorgKromeSoundBank.getSoundName(dump.bankMSB, dump.bankLSB, dump.progNum, modeStr)
-        val nameToUse = if (resolvedName.isNotBlank() && !resolvedName.startsWith("PC ")) {
-            resolvedName
-        } else if (currentPreset.name.isNotBlank() && !currentPreset.name.startsWith("Sound ")) {
-            currentPreset.name
-        } else {
-            "$modeStr P${dump.progNum}"
-        }
+            val currentPreset = currentList[slotIdx]
+            val modeStr = if (dump.isCombi) "Combi" else "Prog"
+            val resolvedName = KorgKromeSoundBank.getSoundName(dump.bankMSB, dump.bankLSB, dump.progNum, modeStr)
+            val nameToUse = if (resolvedName.isNotBlank() && !resolvedName.startsWith("PC ")) {
+                resolvedName
+            } else if (currentPreset.name.isNotBlank() && !currentPreset.name.startsWith("Sound ")) {
+                currentPreset.name
+            } else {
+                "$modeStr P${dump.progNum}"
+            }
 
-        val updatedPreset = currentPreset.copy(
-            name = nameToUse,
-            msb = dump.bankMSB,
-            lsb = dump.bankLSB,
-            program = dump.progNum,
-            mode = modeStr,
-            triggerNote = dump.triggerNote,
-            outputNote = if (dump.outNote < 127) dump.outNote else -1,
-            buttonType = if (dump.outNote < 127) "NOTE" else "PGM",
-            midiChannel = dump.outChannel
-        )
-        currentList[slotIdx] = updatedPreset
-        _soundPresets.value = currentList
-        saveConfiguration(_currentConfigName.value)
-        _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from ESP32: $nameToUse (Trig Note: ${dump.triggerNote})"
+            val updatedPreset = currentPreset.copy(
+                name = nameToUse,
+                msb = dump.bankMSB,
+                lsb = dump.bankLSB,
+                program = dump.progNum,
+                mode = modeStr,
+                triggerNote = dump.triggerNote,
+                outputNote = if (dump.outNote < 127) dump.outNote else -1,
+                buttonType = if (dump.outNote < 127) "NOTE" else "PGM",
+                midiChannel = dump.outChannel
+            )
+            currentList[slotIdx] = updatedPreset
+            _soundPresets.value = currentList
+            saveConfiguration(_currentConfigName.value)
+            _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from ESP32: $nameToUse (Trig Note: ${dump.triggerNote})"
+        } finally {
+            _isSyncingFromEsp32.value = false
+        }
     }
 
     fun startMidiLearn(padIndex: Int) {
@@ -400,11 +444,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val activePadNotes = java.util.concurrent.ConcurrentHashMap<Int, Pair<Int, Int>>()
 
     fun onPadPress(index: Int) {
+        // Send SELECT SLOT (F0 7D 05 SLOT F7) to ESP32
+        midiController.sendEsp32SelectSlot(index)
+        triggerSlotToKorg(index)
+    }
+
+    fun triggerSlotToKorg(index: Int) {
         val preset = _soundPresets.value.getOrNull(index) ?: return
         _selectedPresetIndex.value = index
-
-        // SELECT SLOT -> ESP32
-        midiController.sendEsp32SelectSlot(index)
 
         val targetChannel = if (preset.midiChannel in 0..15) preset.midiChannel else _channel.value
 
