@@ -348,7 +348,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setTranspose(value: Int) {
         val newTranspose = value.coerceIn(-12, 12)
         _transpose.value = newTranspose
+        // Tetap kirim ke KORG
         midiController.sendMasterCoarseTune(_channel.value, newTranspose)
+        // Kirim state transpose ke ESP32
+        midiController.sendEsp32Transpose(newTranspose)
     }
 
     fun updatePreset(index: Int, preset: SoundPreset, syncToEsp32: Boolean = true) {
@@ -399,6 +402,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onPadPress(index: Int) {
         val preset = _soundPresets.value.getOrNull(index) ?: return
         _selectedPresetIndex.value = index
+
+        // SELECT SLOT -> ESP32
+        midiController.sendEsp32SelectSlot(index)
 
         val targetChannel = if (preset.midiChannel in 0..15) preset.midiChannel else _channel.value
 

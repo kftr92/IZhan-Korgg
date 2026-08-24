@@ -74,6 +74,8 @@ class KorgMidiService : Service() {
         const val CMD_ESP32_SAVE_SLOT: Byte = 0x01.toByte()
         const val CMD_ESP32_DUMP_SLOT: Byte = 0x02.toByte()
         const val CMD_ESP32_REQ_DUMP: Byte = 0x03.toByte()
+        const val CMD_ESP32_TRANSPOSE: Byte = 0x04.toByte()
+        const val CMD_ESP32_SELECT_SLOT: Byte = 0x05.toByte()
     }
 
     private val binder = KorgMidiBinder()
@@ -756,6 +758,60 @@ class KorgMidiService : Service() {
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error sending ESP32 Dump Request", e)
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Dump Request", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendEsp32Transpose(transpose: Int) {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Transpose Skipped: Port Closed", "Val: $transpose")
+            return
+        }
+        try {
+            val clamped = transpose.coerceIn(-12, 12)
+            val encoded = (clamped + 12).toByte()
+            val sysex = byteArrayOf(
+                SYSEX_START,
+                SYSEX_MANUFACTURER_ID,
+                CMD_ESP32_TRANSPOSE,
+                encoded,
+                SYSEX_END
+            )
+            port.send(sysex, 0, sysex.size)
+            val signStr = if (clamped > 0) "+$clamped" else "$clamped"
+            logTraffic(
+                MidiTrafficLog.Direction.OUT,
+                "TX ESP32 TRANSPOSE: $signStr",
+                bytesToHex(sysex)
+            )
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending ESP32 Transpose SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Transpose", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendEsp32SelectSlot(slotIndex: Int) {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Select Slot Skipped: Port Closed", "Slot $slotIndex")
+            return
+        }
+        try {
+            val slotIdx = slotIndex.coerceIn(0, 11).toByte()
+            val sysex = byteArrayOf(
+                SYSEX_START,
+                SYSEX_MANUFACTURER_ID,
+                CMD_ESP32_SELECT_SLOT,
+                slotIdx,
+                SYSEX_END
+            )
+            port.send(sysex, 0, sysex.size)
+            logTraffic(
+                MidiTrafficLog.Direction.OUT,
+                "TX ESP32 SELECT SLOT: ${slotIndex + 1}",
+                bytesToHex(sysex)
+            )
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending ESP32 Select Slot SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Select Slot", e.localizedMessage ?: "Unknown error")
         }
     }
 
