@@ -100,6 +100,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _midiLearningPadIndex = MutableStateFlow<Int?>(null)
     val midiLearningPadIndex: StateFlow<Int?> = _midiLearningPadIndex.asStateFlow()
 
+    private var esp32DumpJob: kotlinx.coroutines.Job? = null
+
     init {
         refreshSavedConfigurations()
         loadConfiguration("Default Setup")
@@ -133,7 +135,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             midiController.esp32IncomingSelectSlot.collect { rxSlot ->
-                if (rxSlot != null && rxSlot in _soundPresets.value.indices) {
+                if (rxSlot != null && rxSlot in 0..127) {
+                    val currentList = _soundPresets.value.toMutableList()
+                    while (currentList.size <= rxSlot) {
+                        currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
+                    }
+                    if (currentList.size != _soundPresets.value.size) {
+                        _soundPresets.value = currentList
+                        saveConfiguration(_currentConfigName.value)
+                    }
+
                     _selectedPresetIndex.value = rxSlot
                     _activeInputTriggerPadIndex.value = rxSlot
                     val targetPreset = _soundPresets.value[rxSlot]
@@ -159,42 +170,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun handleEsp32SlotDump(dump: Esp32SlotDump) {
         val slotIdx = dump.slotIndex
-        if (slotIdx !in 0..15) return
+        if (slotIdx !in 0..127) return
         _isSyncingFromEsp32.value = true
-        try {
-            val currentList = _soundPresets.value.toMutableList()
-            while (currentList.size <= slotIdx) {
-                currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
-            }
 
-            val currentPreset = currentList[slotIdx]
-            val modeStr = if (dump.isCombi) "Combi" else "Prog"
-            val resolvedName = KorgKromeSoundBank.getSoundName(dump.bankMSB, dump.bankLSB, dump.progNum, modeStr)
-            val nameToUse = if (resolvedName.isNotBlank() && !resolvedName.startsWith("PC ")) {
-                resolvedName
-            } else if (currentPreset.name.isNotBlank() && !currentPreset.name.startsWith("Sound ")) {
-                currentPreset.name
-            } else {
-                "$modeStr P${dump.progNum}"
-            }
+        val currentList = _soundPresets.value.toMutableList()
+        while (currentList.size <= slotIdx) {
+            currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
+        }
 
-            val updatedPreset = currentPreset.copy(
-                name = nameToUse,
-                msb = dump.bankMSB,
-                lsb = dump.bankLSB,
-                program = dump.progNum,
-                mode = modeStr,
-                triggerNote = dump.triggerNote,
-                outputNote = if (dump.outNote < 127) dump.outNote else -1,
-                buttonType = if (dump.outNote < 127) "NOTE" else "PGM",
-                midiChannel = dump.outChannel
-            )
-            currentList[slotIdx] = updatedPreset
-            _soundPresets.value = currentList
-            saveConfiguration(_currentConfigName.value)
-            _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from ESP32: $nameToUse (Trig Note: ${dump.triggerNote})"
-        } finally {
+        val currentPreset = currentList[slotIdx]
+        val modeStr = if (dump.isCombi) "Combi" else "Prog"
+        val resolvedName = KorgKromeSoundBank.getSoundName(dump.bankMSB, dump.bankLSB, dump.progNum, modeStr)
+        val nameToUse = if (resolvedName.isNotBlank() && !resolvedName.startsWith("PC ")) {
+            resolvedName
+        } else if (currentPreset.name.isNotBlank() && !currentPreset.name.startsWith("Sound ")) {
+            currentPreset.name
+        } else {
+            "$modeStr P${dump.progNum}"
+        }
+
+        val updatedPreset = currentPreset.copy(
+            name = nameToUse,
+            msb = dump.bankMSB,
+            lsb = dump.bankLSB,
+            program = dump.progNum,
+            mode = modeStr,
+            triggerNote = dump.triggerNote,
+            outputNote = if (dump.outNote < 127) dump.outNote else -1,
+            buttonType = if (dump.outNote < 127) "NOTE" else "PGM",
+            midiChannel = dump.outChannel
+        )
+        currentList[slotIdx] = updatedPreset
+        _soundPresets.value = currentList
+        _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from ESP32: $nameToUse"
+
+        // Debounce dump completion to batch session
+        scheduleDumpCompletionDebounce()
+    }
+
+    private fun scheduleDumpCompletionDebounce() {
+        esp32DumpJob?.cancel()
+        esp32DumpJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(750)
             _isSyncingFromEsp32.value = false
+            saveConfiguration(_currentConfigName.value)
+            midiController.logTraffic(
+                MidiTrafficLog.Direction.SYSTEM,
+                "[ESP32 PULL] COMPLETE count=${_soundPresets.value.size}",
+                ""
+            )
+            _lastMidiInputInfo.value = "ESP32 Dump Complete (${_soundPresets.value.size} slots)"
         }
     }
 
@@ -432,11 +457,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun requestEsp32Dump() {
+        _isSyncingFromEsp32.value = true
         midiController.sendEsp32DumpRequest()
+        scheduleDumpCompletionDebounce()
     }
 
     fun syncAllSlotsToEsp32() {
-        _soundPresets.value.forEachIndexed { idx, preset ->
+        val presets = _soundPresets.value
+        midiController.logTraffic(
+            MidiTrafficLog.Direction.SYSTEM,
+            "[ESP32 PUSH ALL] count=${presets.size}",
+            ""
+        )
+        presets.forEachIndexed { idx, preset ->
+            midiController.logTraffic(
+                MidiTrafficLog.Direction.SYSTEM,
+                "[ESP32 PUSH] slot=${idx + 1} index=$idx",
+                ""
+            )
             sendEsp32SlotConfig(idx, preset)
         }
     }

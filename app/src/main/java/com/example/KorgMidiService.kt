@@ -714,7 +714,7 @@ class KorgMidiService : Service() {
             return
         }
         try {
-            val sIdx = slotIndex.coerceIn(0, 11).toByte()
+            val sIdx = slotIndex.coerceIn(0, 127).toByte()
             val tNote = triggerNote.coerceIn(0, 127).toByte()
             val combi = (if (isCombi != 0) 1 else 0).toByte()
             val msb = bankMSB.coerceIn(0, 127).toByte()
@@ -740,7 +740,7 @@ class KorgMidiService : Service() {
             port.send(sysex, 0, sysex.size)
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "TX ESP32 SAVE SLOT: ${slotIndex + 1}",
+                "[ESP32 TX SLOT] index=$slotIndex slot=${slotIndex + 1}",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
@@ -762,7 +762,7 @@ class KorgMidiService : Service() {
                 SYSEX_END
             )
             port.send(sysex, 0, sysex.size)
-            logTraffic(MidiTrafficLog.Direction.OUT, "TX ESP32 REQUEST FULL DUMP", bytesToHex(sysex))
+            logTraffic(MidiTrafficLog.Direction.OUT, "[ESP32 PULL] REQUEST DUMP", bytesToHex(sysex))
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error sending ESP32 Dump Request", e)
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Dump Request", e.localizedMessage ?: "Unknown error")
@@ -803,7 +803,7 @@ class KorgMidiService : Service() {
             return
         }
         try {
-            val slotIdx = slotIndex.coerceIn(0, 11).toByte()
+            val slotIdx = slotIndex.coerceIn(0, 127).toByte()
             val sysex = byteArrayOf(
                 SYSEX_START,
                 SYSEX_MANUFACTURER_ID,
@@ -814,7 +814,7 @@ class KorgMidiService : Service() {
             port.send(sysex, 0, sysex.size)
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "TX ESP32 SELECT SLOT: ${slotIndex + 1}",
+                "[ESP32 TX SELECT] index=$slotIndex slot=${slotIndex + 1}",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
@@ -1001,7 +1001,7 @@ class KorgMidiService : Service() {
                             outNote = outNote
                         )
                         _esp32SlotDump.value = dump
-                        val summary = "[ESP32 BLE RX]\nSLOT ${slotIndex + 1}\nTrigger=$triggerNote\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote"
+                        val summary = "[ESP32 RX DUMP] index=$slotIndex slot=${slotIndex + 1}\nTrigger=$triggerNote\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                     } else {
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
@@ -1013,7 +1013,7 @@ class KorgMidiService : Service() {
                         val rxTranspose = (encoded - 12).coerceIn(-12, 12)
                         _esp32IncomingTranspose.value = rxTranspose
                         val signStr = if (rxTranspose > 0) "+$rxTranspose" else "$rxTranspose"
-                        val summary = "[ESP32 BLE RX]\nTRANSPOSE = $signStr"
+                        val summary = "[ESP32 RX TRANSPOSE] transpose=$signStr"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                     } else {
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Transpose Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
@@ -1023,7 +1023,7 @@ class KorgMidiService : Service() {
                     if (sysexBytes.size >= 5) {
                         val slot = sysexBytes[3].toInt() and 0x7F
                         _esp32IncomingSelectSlot.value = slot
-                        val summary = "[ESP32 BLE RX]\nSELECT SLOT = ${slot + 1}"
+                        val summary = "[ESP32 RX SELECT] index=$slot slot=${slot + 1}"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                     } else {
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Select Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
