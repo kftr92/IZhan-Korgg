@@ -205,8 +205,15 @@ class KorgMidiService : Service() {
             if (msg == null || count <= 0) return
             val rawBytes = msg.copyOfRange(offset, offset + count)
             val rawHex = bytesToHex(rawBytes)
-            logTraffic(MidiTrafficLog.Direction.IN, "[BLE RAW NOTIFICATION] $rawHex", rawHex)
-            Log.d("KorgMidiService", "[BLE RAW NOTIFICATION] $rawHex")
+            
+            // --- DIAGNOSTIC LOGS ---
+            val callbackDiag = "[MIDI CALLBACK] offset=$offset count=$count timestamp=$timestamp"
+            val rawDiag = "[ANDROID MIDI RAW] $rawHex"
+            
+            Log.d("KorgMidiService", callbackDiag)
+            Log.d("KorgMidiService", rawDiag)
+            logTraffic(MidiTrafficLog.Direction.IN, "$callbackDiag\n$rawDiag", rawHex)
+            
             parseIncomingMidiBytes(msg, offset, count)
         }
     }
@@ -453,14 +460,19 @@ class KorgMidiService : Service() {
 
         _selectedInputDeviceInfo.value = deviceInfo
         val name = getDeviceDisplayName(deviceInfo)
-        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Connecting Input MIDI: $name", "ID: ${deviceInfo.id}")
+        val devType = if (deviceInfo.type == MidiDeviceInfo.TYPE_BLUETOOTH) "BLUETOOTH" else "USB/OTHER"
+        val devDiag = "[MIDI DEVICE]\nname=$name\nid=${deviceInfo.id}\ntype=$devType\ninputPorts=${deviceInfo.inputPortCount}\noutputPorts=${deviceInfo.outputPortCount}"
+        Log.d("KorgMidiService", devDiag)
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, devDiag, "")
 
         if (activeOutputMidiDevice != null && _selectedOutputDeviceInfo.value?.id == deviceInfo.id) {
             activeInputMidiDevice = activeOutputMidiDevice
             if (deviceInfo.outputPortCount > 0) {
                 outputPort = activeInputMidiDevice?.openOutputPort(0)
                 outputPort?.connect(midiReceiver)
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "Input MIDI Connected (Shared device): $name", "")
+                val connDiag = "[MIDI CONNECT]\ndevice=$name\nport=0 (Input Receiver Connected)"
+                Log.d("KorgMidiService", connDiag)
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, connDiag, "")
             }
         } else {
             midiManager.openDevice(deviceInfo, { device ->
@@ -469,7 +481,9 @@ class KorgMidiService : Service() {
                     if (deviceInfo.outputPortCount > 0) {
                         outputPort = device.openOutputPort(0)
                         outputPort?.connect(midiReceiver)
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Input MIDI Connected: $name", "")
+                        val connDiag = "[MIDI CONNECT]\ndevice=$name\nport=0 (Input Receiver Connected)"
+                        Log.d("KorgMidiService", connDiag)
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, connDiag, "")
                     }
                 } else {
                     logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open Input MIDI: $name", "")
@@ -958,7 +972,9 @@ class KorgMidiService : Service() {
                     } else {
                         "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
                     }
-                    logTraffic(MidiTrafficLog.Direction.IN, summary, "")
+                    val diagParsed = "[MIDI PARSED] type=${if (isNoteOn) "NOTE_ON" else "NOTE_OFF"} ch=$chDisplay note=$note velocity=$vel"
+                    Log.d("KorgMidiService", diagParsed)
+                    logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
                     Log.d("KorgMidiService", summary)
 
                     _incomingMidiEvent.value = IncomingMidiInputEvent(ch, eventType, note, vel)
@@ -972,7 +988,9 @@ class KorgMidiService : Service() {
                     Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
 
                     val summary = "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
-                    logTraffic(MidiTrafficLog.Direction.IN, summary, "")
+                    val diagParsed = "[MIDI PARSED] type=NOTE_OFF ch=$chDisplay note=$note velocity=$vel"
+                    Log.d("KorgMidiService", diagParsed)
+                    logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
                     Log.d("KorgMidiService", summary)
 
                     _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.NOTE_OFF, note, vel)
@@ -1146,7 +1164,9 @@ class KorgMidiService : Service() {
                         val slot = sysexBytes[3].toInt() and 0x7F
                         val slotNumber = slot + 1
                         val summary = "[ESP32 RX] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
-                        logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
+                        val diagCmd = "[ESP32 CMD RECEIVED]\ncmd=05\nslotIndex=$slot\nslot=$slotNumber"
+                        Log.d("KorgMidiService", diagCmd)
+                        logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagCmd", bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
                         _esp32IncomingSelectSlot.value = slot
                     } else {
