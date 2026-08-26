@@ -62,6 +62,18 @@ class KorgMidiController(
     private val _esp32IncomingSelectSlot = MutableStateFlow<Int?>(null)
     val esp32IncomingSelectSlot: StateFlow<Int?> = _esp32IncomingSelectSlot.asStateFlow()
 
+    private val _lastRawMidiHex = MutableStateFlow<String>("")
+    val lastRawMidiHex: StateFlow<String> = _lastRawMidiHex.asStateFlow()
+
+    private val _lastParsedMidiSummary = MutableStateFlow<String>("")
+    val lastParsedMidiSummary: StateFlow<String> = _lastParsedMidiSummary.asStateFlow()
+
+    private val _lastSysexHex = MutableStateFlow<String>("")
+    val lastSysexHex: StateFlow<String> = _lastSysexHex.asStateFlow()
+
+    private val _lastEsp32CommandSummary = MutableStateFlow<String>("")
+    val lastEsp32CommandSummary: StateFlow<String> = _lastEsp32CommandSummary.asStateFlow()
+
     private val _scannedBleDevices = MutableStateFlow<List<BleMidiDevice>>(emptyList())
     val scannedBleDevices: StateFlow<List<BleMidiDevice>> = _scannedBleDevices.asStateFlow()
 
@@ -111,6 +123,18 @@ class KorgMidiController(
                 }
                 scope.launch {
                     midiService?.esp32IncomingSelectSlot?.collect { _esp32IncomingSelectSlot.value = it }
+                }
+                scope.launch {
+                    midiService?.lastRawMidiHex?.collect { _lastRawMidiHex.value = it }
+                }
+                scope.launch {
+                    midiService?.lastParsedMidiSummary?.collect { _lastParsedMidiSummary.value = it }
+                }
+                scope.launch {
+                    midiService?.lastSysexHex?.collect { _lastSysexHex.value = it }
+                }
+                scope.launch {
+                    midiService?.lastEsp32CommandSummary?.collect { _lastEsp32CommandSummary.value = it }
                 }
                 scope.launch {
                     midiService?.scannedBleDevices?.collect { _scannedBleDevices.value = it }

@@ -126,6 +126,19 @@ class KorgMidiService : Service() {
     private val _esp32IncomingSelectSlot = MutableStateFlow<Int?>(null)
     val esp32IncomingSelectSlot: StateFlow<Int?> = _esp32IncomingSelectSlot.asStateFlow()
 
+    // Diagnostic State (RAW MIDI, last parsed summary, last Sysex, etc.)
+    private val _lastRawMidiHex = MutableStateFlow<String>("")
+    val lastRawMidiHex: StateFlow<String> = _lastRawMidiHex.asStateFlow()
+
+    private val _lastParsedMidiSummary = MutableStateFlow<String>("")
+    val lastParsedMidiSummary: StateFlow<String> = _lastParsedMidiSummary.asStateFlow()
+
+    private val _lastSysexHex = MutableStateFlow<String>("")
+    val lastSysexHex: StateFlow<String> = _lastSysexHex.asStateFlow()
+
+    private val _lastEsp32CommandSummary = MutableStateFlow<String>("")
+    val lastEsp32CommandSummary: StateFlow<String> = _lastEsp32CommandSummary.asStateFlow()
+
     private val _scannedBleDevices = MutableStateFlow<List<BleMidiDevice>>(emptyList())
     val scannedBleDevices: StateFlow<List<BleMidiDevice>> = _scannedBleDevices.asStateFlow()
 
@@ -206,9 +219,10 @@ class KorgMidiService : Service() {
             val rawBytes = msg.copyOfRange(offset, offset + count)
             val rawHex = bytesToHex(rawBytes)
             
-            // --- DIAGNOSTIC LOGS ---
+            // --- DIAGNOSTIC LOGS & STATE ---
             val callbackDiag = "[MIDI CALLBACK] offset=$offset count=$count timestamp=$timestamp"
             val rawDiag = "[ANDROID MIDI RAW] $rawHex"
+            _lastRawMidiHex.value = rawHex
             
             Log.d("KorgMidiService", callbackDiag)
             Log.d("KorgMidiService", rawDiag)
@@ -973,6 +987,7 @@ class KorgMidiService : Service() {
                         "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
                     }
                     val diagParsed = "[MIDI PARSED] type=${if (isNoteOn) "NOTE_ON" else "NOTE_OFF"} ch=$chDisplay note=$note velocity=$vel"
+                    _lastParsedMidiSummary.value = diagParsed
                     Log.d("KorgMidiService", diagParsed)
                     logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
                     Log.d("KorgMidiService", summary)
@@ -989,6 +1004,7 @@ class KorgMidiService : Service() {
 
                     val summary = "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
                     val diagParsed = "[MIDI PARSED] type=NOTE_OFF ch=$chDisplay note=$note velocity=$vel"
+                    _lastParsedMidiSummary.value = diagParsed
                     Log.d("KorgMidiService", diagParsed)
                     logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
                     Log.d("KorgMidiService", summary)
@@ -1095,6 +1111,9 @@ class KorgMidiService : Service() {
             return
         }
 
+        val sysexHexStr = bytesToHex(sysexBytes)
+        _lastSysexHex.value = sysexHexStr
+
         val b0 = sysexBytes[0].toInt() and 0xFF
         val b1 = sysexBytes[1].toInt() and 0xFF
 
@@ -1140,6 +1159,7 @@ class KorgMidiService : Service() {
                         _esp32SlotDump.value = dump
                         val slotNumber = slotIndex + 1
                         val summary = "[ESP32 RX] CMD=0x${cmd.toString(16).uppercase()} DUMP index=$slotIndex slot=$slotNumber\nTrigger=$triggerNote\nType=$buttonTypeStr\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote\nVelocity=$velocity"
+                        _lastEsp32CommandSummary.value = "CMD 02 (Dump Slot $slotNumber)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
                     } else {
@@ -1153,6 +1173,7 @@ class KorgMidiService : Service() {
                         _esp32IncomingTranspose.value = rxTranspose
                         val signStr = if (rxTranspose > 0) "+$rxTranspose" else "$rxTranspose"
                         val summary = "[ESP32 RX] CMD=04 TRANSPOSE $signStr"
+                        _lastEsp32CommandSummary.value = "CMD 04 (Transpose $signStr)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
                     } else {
@@ -1165,6 +1186,7 @@ class KorgMidiService : Service() {
                         val slotNumber = slot + 1
                         val summary = "[ESP32 RX] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
                         val diagCmd = "[ESP32 CMD RECEIVED]\ncmd=05\nslotIndex=$slot\nslot=$slotNumber"
+                        _lastEsp32CommandSummary.value = "CMD 05 (Select Slot $slotNumber, Index $slot)"
                         Log.d("KorgMidiService", diagCmd)
                         logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagCmd", bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
@@ -1175,6 +1197,7 @@ class KorgMidiService : Service() {
                 }
                 else -> {
                     val summary = "[ESP32 RX] CMD=0x${cmd.toString(16).uppercase()}"
+                    _lastEsp32CommandSummary.value = "CMD 0x${cmd.toString(16).uppercase()}"
                     logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                     Log.d("KorgMidiService", summary)
                 }

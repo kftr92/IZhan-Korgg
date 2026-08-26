@@ -73,6 +73,7 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Refresh
@@ -609,10 +610,15 @@ fun MidiControllerApp(viewModel: MainViewModel) {
     val midiLearningPadIndex by viewModel.midiLearningPadIndex.collectAsStateWithLifecycle()
     val scannedBleDevices by viewModel.scannedBleDevices.collectAsStateWithLifecycle()
     val isScanningBle by viewModel.isScanningBle.collectAsStateWithLifecycle()
+    val lastRawMidiHex by viewModel.midiController.lastRawMidiHex.collectAsStateWithLifecycle()
+    val lastParsedMidiSummary by viewModel.midiController.lastParsedMidiSummary.collectAsStateWithLifecycle()
+    val lastSysexHex by viewModel.midiController.lastSysexHex.collectAsStateWithLifecycle()
+    val lastEsp32CommandSummary by viewModel.midiController.lastEsp32CommandSummary.collectAsStateWithLifecycle()
 
     var editPresetIndex by remember { mutableStateOf<Int?>(null) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var showBleMidiDialog by remember { mutableStateOf(false) }
+    var showDiagnosticDialog by remember { mutableStateOf(false) }
     var newConfigName by remember { mutableStateOf("") }
     var showConfigMenu by remember { mutableStateOf(false) }
     var isEditMode by remember { mutableStateOf(false) }
@@ -1253,10 +1259,33 @@ fun MidiControllerApp(viewModel: MainViewModel) {
             onDisconnectDevice = { device ->
                 viewModel.disconnectBleDevice(device)
             },
+            onOpenDiagnostic = {
+                showDiagnosticDialog = true
+            },
             onDismiss = {
                 viewModel.stopBleScan()
                 showBleMidiDialog = false
             }
+        )
+    }
+
+    // MIDI / BLE DIAGNOSTIC PANEL DIALOG
+    if (showDiagnosticDialog) {
+        MidiBleDiagnosticDialog(
+            connectionStatus = connectionStatus,
+            statusMessage = statusMessage,
+            selectedInputDevice = selectedInputDevice,
+            selectedOutputDevice = selectedOutputDevice,
+            lastRawMidiHex = lastRawMidiHex,
+            lastParsedMidiSummary = lastParsedMidiSummary,
+            lastSysexHex = lastSysexHex,
+            lastEsp32CommandSummary = lastEsp32CommandSummary,
+            activeSlotIndex = activeInputTriggerPadIndex ?: selectedPresetIndex,
+            activePresetName = soundPresets.getOrNull(activeInputTriggerPadIndex ?: selectedPresetIndex)?.name ?: "None",
+            midiLearningPadIndex = midiLearningPadIndex,
+            trafficLogs = trafficLogs,
+            onClearLogs = { viewModel.midiController.clearTrafficLogs() },
+            onDismiss = { showDiagnosticDialog = false }
         )
     }
 
@@ -1465,6 +1494,24 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                             imageVector = if (hasBleConnected) Icons.Default.BluetoothConnected else if (isScanningBle) Icons.Default.BluetoothSearching else Icons.Default.Bluetooth,
                             contentDescription = "BLE MIDI",
                             tint = if (hasBleConnected) Color(0xFF00E676) else if (isScanningBle) Color(0xFF00E5FF) else Color.White,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
+                )
+
+                // DIAGNOSTIC PANEL Button
+                SmallGlossyButton(
+                    text = "DIAG",
+                    isSelected = showDiagnosticDialog,
+                    onClick = { showDiagnosticDialog = true },
+                    fontSize = 10.sp,
+                    horizontalPadding = 5.dp,
+                    verticalPadding = 3.dp,
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "MIDI / BLE Diagnostic Panel",
+                            tint = if (showDiagnosticDialog) Color(0xFFFF9E00) else Color(0xFF00E5FF),
                             modifier = Modifier.size(13.dp)
                         )
                     }
@@ -2588,6 +2635,7 @@ fun BleMidiDialog(
     onStopScan: () -> Unit,
     onConnectDevice: (android.bluetooth.BluetoothDevice, asInput: Boolean, asOutput: Boolean) -> Unit,
     onDisconnectDevice: (android.bluetooth.BluetoothDevice) -> Unit,
+    onOpenDiagnostic: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "ble_pulse")
@@ -2839,7 +2887,312 @@ fun BleMidiDialog(
                 Text("Close", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold)
             }
         },
+        dismissButton = {
+            TextButton(onClick = {
+                onDismiss()
+                onOpenDiagnostic()
+            }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFFF9E00), modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Open Diagnostic Panel", color = Color(0xFFFF9E00), fontWeight = FontWeight.Bold)
+                }
+            }
+        },
         containerColor = Color(0xFF061022),
         tonalElevation = 8.dp
     )
 }
+
+@Composable
+fun MidiBleDiagnosticDialog(
+    connectionStatus: KorgConnectionStatus,
+    statusMessage: String,
+    selectedInputDevice: MidiDeviceInfo?,
+    selectedOutputDevice: MidiDeviceInfo?,
+    lastRawMidiHex: String,
+    lastParsedMidiSummary: String,
+    lastSysexHex: String,
+    lastEsp32CommandSummary: String,
+    activeSlotIndex: Int,
+    activePresetName: String,
+    midiLearningPadIndex: Int?,
+    trafficLogs: List<MidiTrafficLog>,
+    onClearLogs: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val statusColor = when (connectionStatus) {
+        KorgConnectionStatus.CONNECTED -> Color(0xFF00E676)
+        KorgConnectionStatus.CONNECTING, KorgConnectionStatus.SCANNING -> Color(0xFFFF9E00)
+        else -> Color(0xFFFF1744)
+    }
+
+    val inputDevName = selectedInputDevice?.properties?.getString(MidiDeviceInfo.PROPERTY_NAME)
+        ?: selectedInputDevice?.properties?.getString(MidiDeviceInfo.PROPERTY_PRODUCT)
+        ?: "None"
+
+    val outputDevName = selectedOutputDevice?.properties?.getString(MidiDeviceInfo.PROPERTY_NAME)
+        ?: selectedOutputDevice?.properties?.getString(MidiDeviceInfo.PROPERTY_PRODUCT)
+        ?: "None"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth(0.95f)
+            .widthIn(max = 880.dp)
+            .padding(vertical = 8.dp),
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(statusColor)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "MIDI / BLE DIAGNOSTIC PANEL",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                }
+            }
+        },
+        containerColor = Color(0xFF050E20),
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Top Status Grid Card
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF020712)),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFF13264A), RoundedCornerShape(8.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        // Line 1: Connection & Devices
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "BLE / MIDI Status: ${connectionStatus.name}",
+                                color = statusColor,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.5.sp
+                            )
+                            Text(
+                                "IN: $inputDevName  |  OUT: $outputDevName",
+                                color = Color(0xFF80D8FF),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        // Line 2: Last RAW MIDI received at MidiReceiver.onSend()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "Last RAW MIDI:",
+                                color = Color.Gray,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                if (lastRawMidiHex.isNotBlank()) lastRawMidiHex else "(No raw bytes yet)",
+                                color = if (lastRawMidiHex.isNotBlank()) Color(0xFF00E5FF) else Color.DarkGray,
+                                fontSize = 10.5.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Line 3: Parsed MIDI Event
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "Parsed MIDI:",
+                                color = Color.Gray,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                if (lastParsedMidiSummary.isNotBlank()) lastParsedMidiSummary else "(Waiting for Note/CC)",
+                                color = if (lastParsedMidiSummary.isNotBlank()) Color(0xFF69F0AE) else Color.DarkGray,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Line 4: ESP32 SysEx & Command (CMD 05 / 02 / 04)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "ESP32 Command:",
+                                color = Color.Gray,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(No SysEx CMD)",
+                                color = if (lastEsp32CommandSummary.isNotBlank()) Color(0xFFFFD54F) else Color.DarkGray,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Line 5: Active Slot & MIDI Learn State
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "Active UI Slot: Slot ${activeSlotIndex + 1} ($activePresetName)",
+                                color = Color(0xFFFF9E00),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                if (midiLearningPadIndex != null) "MIDI LEARN: Slot ${midiLearningPadIndex + 1} [ACTIVE]" else "MIDI Learn: IDLE",
+                                color = if (midiLearningPadIndex != null) Color(0xFFFF1744) else Color(0xFFB0BEC5),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Traffic Log Stream Box
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(Color(0xFF02050E), RoundedCornerShape(6.dp))
+                        .border(1.dp, Color(0xFF0C1935), RoundedCornerShape(6.dp))
+                        .padding(6.dp)
+                ) {
+                    if (trafficLogs.isEmpty()) {
+                        Text(
+                            "Waiting for incoming BLE-MIDI or ESP32 commands...\nPress nanoPAD or buttons on controller.",
+                            color = Color.DarkGray,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    } else {
+                        val scrollState = rememberScrollState()
+                        LaunchedEffect(trafficLogs.size) {
+                            scrollState.animateScrollTo(scrollState.maxValue)
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(scrollState),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            trafficLogs.takeLast(100).forEach { log ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF061024), RoundedCornerShape(4.dp))
+                                        .padding(5.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        val (dirText, dirColor) = when (log.direction) {
+                                            MidiTrafficLog.Direction.IN -> "◄ RX" to Color(0xFF00E5FF)
+                                            MidiTrafficLog.Direction.OUT -> "► TX" to Color(0xFFFF9100)
+                                            MidiTrafficLog.Direction.SYSTEM -> "● SYS" to Color(0xFFE040FB)
+                                        }
+                                        Text(dirText, color = dirColor, fontWeight = FontWeight.ExtraBold, fontSize = 9.5.sp)
+                                        Text(log.timestamp, color = Color.Gray, fontSize = 8.5.sp)
+                                    }
+                                    Text(
+                                        log.summary,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 10.5.sp
+                                    )
+                                    if (log.hexDump.isNotBlank()) {
+                                        Text(
+                                            log.hexDump,
+                                            color = Color(0xFF80D8FF),
+                                            fontSize = 9.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Bottom Action Bar inside Dialog
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "${trafficLogs.size} events logged",
+                        color = Color.Gray,
+                        fontSize = 10.5.sp
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(
+                            onClick = onClearLogs,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF801313)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Clear", tint = Color.White, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("CLEAR LOGS", fontSize = 10.5.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E2248)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("CLOSE", fontSize = 10.5.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {}
+    )
+}
+
