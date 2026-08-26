@@ -155,7 +155,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mode = targetPreset.mode,
                         customName = targetPreset.name
                     )
-                    triggerSlotToKorg(rxSlot)
+                    // NOTE: Do NOT call triggerSlotToKorg(rxSlot) here.
+                    // ESP32 has already executed the MIDI action on Korg Krome.
+                    // CMD 05 is strictly UI feedback / slot selection.
                     viewModelScope.launch {
                         kotlinx.coroutines.delay(350)
                         if (_activeInputTriggerPadIndex.value == rxSlot) {
@@ -181,12 +183,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val currentPreset = currentList[slotIdx]
         val modeStr = if (dump.isCombi) "Combi" else "Prog"
         val resolvedName = KorgKromeSoundBank.getSoundName(dump.bankMSB, dump.bankLSB, dump.progNum, modeStr)
-        val nameToUse = if (resolvedName.isNotBlank() && !resolvedName.startsWith("PC ")) {
-            resolvedName
-        } else if (currentPreset.name.isNotBlank() && !currentPreset.name.startsWith("Sound ")) {
+        val nameToUse = if (currentPreset.name.isNotBlank() && !currentPreset.name.startsWith("Sound ") && !currentPreset.name.startsWith("Prog P") && !currentPreset.name.startsWith("Combi P")) {
             currentPreset.name
+        } else if (resolvedName.isNotBlank() && !resolvedName.startsWith("PC ")) {
+            resolvedName
         } else {
             "$modeStr P${dump.progNum}"
+        }
+
+        val btnType = if (dump.buttonType.isNotBlank()) dump.buttonType else (if (dump.outNote < 127) "NOTE" else "PGM")
+        val outNoteVal = if (btnType.equals("NOTE", ignoreCase = true)) {
+            if (dump.outNote in 0..126) dump.outNote else 60
+        } else {
+            -1
         }
 
         val updatedPreset = currentPreset.copy(
@@ -196,8 +205,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             program = dump.progNum,
             mode = modeStr,
             triggerNote = dump.triggerNote,
-            outputNote = if (dump.outNote < 127) dump.outNote else -1,
-            buttonType = if (dump.outNote < 127) "NOTE" else "PGM",
+            outputNote = outNoteVal,
+            outputVelocity = dump.outputVelocity.coerceIn(1, 127),
+            buttonType = btnType,
             midiChannel = dump.outChannel
         )
         currentList[slotIdx] = updatedPreset
@@ -297,7 +307,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mode = targetPreset.mode,
                         customName = targetPreset.name
                     )
-                    onPadPress(matchedIndex)
                     viewModelScope.launch {
                         kotlinx.coroutines.delay(350)
                         if (_activeInputTriggerPadIndex.value == matchedIndex) {
@@ -318,7 +327,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (matchedIndex in presets.indices) {
                     _activeInputTriggerPadIndex.value = matchedIndex
-                    onPadPress(matchedIndex)
+                    _selectedPresetIndex.value = matchedIndex
+                    val targetPreset = presets[matchedIndex]
+                    midiController.updateCurrentPatch(
+                        msb = targetPreset.msb,
+                        lsb = targetPreset.lsb,
+                        program = targetPreset.program,
+                        mode = targetPreset.mode,
+                        customName = targetPreset.name
+                    )
                     viewModelScope.launch {
                         kotlinx.coroutines.delay(350)
                         if (_activeInputTriggerPadIndex.value == matchedIndex) {
@@ -453,6 +470,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             127
         }
 
+        val velocity = preset.outputVelocity.coerceIn(1, 127)
+        val buttonTypeCode = when {
+            preset.buttonType.equals("NOTE", ignoreCase = true) -> 1
+            preset.buttonType.equals("CC", ignoreCase = true) -> 2
+            preset.buttonType.equals("SX", ignoreCase = true) -> 3
+            preset.buttonType.equals("CUST", ignoreCase = true) -> 4
+            else -> 0 // "PGM" / default
+        }
+
         midiController.sendEsp32SlotConfig(
             slotIndex = slotIndex,
             triggerNote = triggerNote,
@@ -461,7 +487,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             bankLSB = bankLSB,
             progNum = progNum,
             outChannel = outChannel,
-            outNote = outNote
+            outNote = outNote,
+            outputVelocity = velocity,
+            buttonTypeCode = buttonTypeCode
         )
     }
 

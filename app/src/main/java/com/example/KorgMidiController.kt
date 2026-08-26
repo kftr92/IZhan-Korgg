@@ -219,9 +219,22 @@ class KorgMidiController(
         bankLSB: Int,
         progNum: Int,
         outChannel: Int,
-        outNote: Int
+        outNote: Int,
+        outputVelocity: Int = 100,
+        buttonTypeCode: Int = 0
     ) {
-        midiService?.sendEsp32SlotConfig(slotIndex, triggerNote, isCombi, bankMSB, bankLSB, progNum, outChannel, outNote)
+        midiService?.sendEsp32SlotConfig(
+            slotIndex,
+            triggerNote,
+            isCombi,
+            bankMSB,
+            bankLSB,
+            progNum,
+            outChannel,
+            outNote,
+            outputVelocity,
+            buttonTypeCode
+        )
     }
 
     fun sendEsp32DumpRequest() {

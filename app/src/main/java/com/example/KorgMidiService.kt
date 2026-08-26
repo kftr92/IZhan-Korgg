@@ -57,7 +57,9 @@ data class Esp32SlotDump(
     val bankLSB: Int,
     val progNum: Int,
     val outChannel: Int,
-    val outNote: Int
+    val outNote: Int,
+    val outputVelocity: Int = 100,
+    val buttonType: String = if (outNote < 127) "NOTE" else "PGM"
 )
 
 class KorgMidiService : Service() {
@@ -707,7 +709,9 @@ class KorgMidiService : Service() {
         bankLSB: Int,
         progNum: Int,
         outChannel: Int,
-        outNote: Int
+        outNote: Int,
+        outputVelocity: Int = 100,
+        buttonTypeCode: Int = 0
     ) {
         val port = inputPort ?: run {
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Save Skipped: Port Closed", "Slot $slotIndex")
@@ -722,6 +726,8 @@ class KorgMidiService : Service() {
             val prog = progNum.coerceIn(0, 127).toByte()
             val ch = outChannel.coerceIn(0, 15).toByte()
             val oNote = outNote.coerceIn(0, 127).toByte()
+            val vel = outputVelocity.coerceIn(1, 127).toByte()
+            val btnCode = buttonTypeCode.coerceIn(0, 127).toByte()
 
             val sysex = byteArrayOf(
                 SYSEX_START,
@@ -735,12 +741,21 @@ class KorgMidiService : Service() {
                 prog,
                 ch,
                 oNote,
+                vel,
+                btnCode,
                 SYSEX_END
             )
             port.send(sysex, 0, sysex.size)
+            val btnStr = when (buttonTypeCode) {
+                1 -> "NOTE"
+                2 -> "CC"
+                3 -> "SX"
+                4 -> "CUST"
+                else -> "PGM"
+            }
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "[ESP32 TX SLOT] index=$slotIndex slot=${slotIndex + 1}",
+                "[ESP32 TX SLOT] index=$slotIndex slot=${slotIndex + 1} type=$btnStr trig=$triggerNote outNote=$outNote vel=$outputVelocity",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
@@ -989,6 +1004,18 @@ class KorgMidiService : Service() {
                         val progNum = sysexBytes[8].toInt() and 0x7F
                         val outChannel = sysexBytes[9].toInt() and 0x0F
                         val outNote = sysexBytes[10].toInt() and 0x7F
+                        
+                        // Support extended payload (size >= 14 with velocity and buttonType)
+                        val velocity = if (sysexBytes.size >= 14) (sysexBytes[11].toInt() and 0x7F).coerceIn(1, 127) else 100
+                        val btnCode = if (sysexBytes.size >= 14) (sysexBytes[12].toInt() and 0x7F) else (if (outNote < 127) 1 else 0)
+                        val buttonTypeStr = when (btnCode) {
+                            0 -> "PGM"
+                            1 -> "NOTE"
+                            2 -> "CC"
+                            3 -> "SX"
+                            4 -> "CUST"
+                            else -> if (outNote < 127) "NOTE" else "PGM"
+                        }
 
                         val dump = Esp32SlotDump(
                             slotIndex = slotIndex,
@@ -998,10 +1025,12 @@ class KorgMidiService : Service() {
                             bankLSB = bankLSB,
                             progNum = progNum,
                             outChannel = outChannel,
-                            outNote = outNote
+                            outNote = outNote,
+                            outputVelocity = velocity,
+                            buttonType = buttonTypeStr
                         )
                         _esp32SlotDump.value = dump
-                        val summary = "[ESP32 RX DUMP] index=$slotIndex slot=${slotIndex + 1}\nTrigger=$triggerNote\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote"
+                        val summary = "[ESP32 RX DUMP] index=$slotIndex slot=${slotIndex + 1}\nTrigger=$triggerNote\nType=$buttonTypeStr\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote\nVelocity=$velocity"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                     } else {
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
