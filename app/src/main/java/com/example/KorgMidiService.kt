@@ -205,8 +205,8 @@ class KorgMidiService : Service() {
             if (msg == null || count <= 0) return
             val rawBytes = msg.copyOfRange(offset, offset + count)
             val rawHex = bytesToHex(rawBytes)
-            logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI RAW] $rawHex", rawHex)
-            Log.d("KorgMidiService", "[BLE MIDI RAW] $rawHex")
+            logTraffic(MidiTrafficLog.Direction.IN, "[BLE RAW NOTIFICATION] $rawHex", rawHex)
+            Log.d("KorgMidiService", "[BLE RAW NOTIFICATION] $rawHex")
             parseIncomingMidiBytes(msg, offset, count)
         }
     }
@@ -870,15 +870,31 @@ class KorgMidiService : Service() {
         var i = offset
         val end = offset + count
 
-        // If not already inside a SysEx message, check if packet starts with standard BLE-MIDI header + timestamp
-        // BLE-MIDI header byte: bit 7 = 1, bit 6 = 0 (0x80..0xBF)
-        // BLE-MIDI timestamp low byte: bit 7 = 1 (0x80..0xFF)
+        // BLE-MIDI Header stripping:
+        // Header byte has bit 7=1, bit 6=0 (0x80..0xBF)
+        // Timestamp byte has bit 7=1 (0x80..0xFF)
         if (!inSysex && count >= 2) {
             val b0 = msg[offset].toInt() and 0xFF
             val b1 = msg[offset + 1].toInt() and 0xFF
-            if ((b0 and 0xC0) == 0x80 && (b1 and 0x80) != 0) {
-                // Strip BLE-MIDI header and timestamp low byte
+            if ((b0 and 0xC0) == 0x80 && (b1 and 0x80) != 0 && b1 != 0xF7 && b1 != 0xF0) {
+                // Strip BLE-MIDI header and timestamp byte
                 i = offset + 2
+            } else if ((b0 and 0xC0) == 0x80 && (b1 == 0xF0 || (b1 and 0x80) != 0)) {
+                i = offset + 1
+            }
+        } else if (inSysex && count >= 1) {
+            val b0 = msg[offset].toInt() and 0xFF
+            if ((b0 and 0xC0) == 0x80) {
+                if (count >= 2) {
+                    val b1 = msg[offset + 1].toInt() and 0xFF
+                    if ((b1 and 0x80) != 0 && b1 != 0xF7) {
+                        i = offset + 2
+                    } else {
+                        i = offset + 1
+                    }
+                } else {
+                    i = offset + 1
+                }
             }
         }
 
@@ -890,6 +906,9 @@ class KorgMidiService : Service() {
                     sysexAccumulator.write(0xF7)
                     inSysex = false
                     val sysexBytes = sysexAccumulator.toByteArray()
+                    val sysexHex = bytesToHex(sysexBytes)
+                    logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $sysexHex", "")
+                    Log.d("KorgMidiService", "[BLE MIDI DECODE] $sysexHex")
                     processReceivedSysex(sysexBytes)
                     sysexAccumulator.reset()
                 } else if (b == 0xF0) {
@@ -899,7 +918,7 @@ class KorgMidiService : Service() {
                     // Valid 7-bit SysEx payload byte
                     sysexAccumulator.write(b)
                 } else {
-                    // Skip BLE-MIDI timestamp headers / realtime bytes (>= 0x80) inside SysEx
+                    // Skip intermediate BLE-MIDI timestamp / realtime header bytes inside SysEx stream
                 }
                 i++
                 continue
@@ -914,7 +933,7 @@ class KorgMidiService : Service() {
             }
 
             // In BLE-MIDI stream, an intermediate timestamp byte (>= 0x80) can precede a status byte (>= 0x80)
-            if (i + 1 < end && b >= 0x80 && (msg[i + 1].toInt() and 0x80) != 0) {
+            if (i + 1 < end && b >= 0x80 && (msg[i + 1].toInt() and 0x80) != 0 && (msg[i + 1].toInt() and 0xFF) != 0xF7) {
                 i++
                 continue
             }
@@ -929,6 +948,11 @@ class KorgMidiService : Service() {
                     val vel = msg.getOrNull(i + 2)?.toInt()?.and(0x7F) ?: 0
                     val isNoteOn = (vel > 0)
                     val eventType = if (isNoteOn) MidiEventType.NOTE_ON else MidiEventType.NOTE_OFF
+
+                    val midiHex = bytesToHex(byteArrayOf(b.toByte(), note.toByte(), vel.toByte()))
+                    logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                    Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+
                     val summary = if (isNoteOn) {
                         "[BLE MIDI RX] NOTE ON ch=$chDisplay note=$note velocity=$vel"
                     } else {
@@ -936,14 +960,21 @@ class KorgMidiService : Service() {
                     }
                     logTraffic(MidiTrafficLog.Direction.IN, summary, "")
                     Log.d("KorgMidiService", summary)
+
                     _incomingMidiEvent.value = IncomingMidiInputEvent(ch, eventType, note, vel)
                     i += 3
                 } else if (type == 0x80) { // Note Off
                     val note = msg.getOrNull(i + 1)?.toInt()?.and(0x7F) ?: 0
                     val vel = msg.getOrNull(i + 2)?.toInt()?.and(0x7F) ?: 0
+
+                    val midiHex = bytesToHex(byteArrayOf(b.toByte(), note.toByte(), vel.toByte()))
+                    logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                    Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+
                     val summary = "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
                     logTraffic(MidiTrafficLog.Direction.IN, summary, "")
                     Log.d("KorgMidiService", summary)
+
                     _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.NOTE_OFF, note, vel)
                     i += 3
                 } else if (type == 0xB0) { // Control Change
@@ -952,9 +983,15 @@ class KorgMidiService : Service() {
                         val value = msg[i + 2].toInt() and 0x7F
                         if (cc == 0) currentMsb = value
                         else if (cc == 32) currentLsb = value
+
+                        val midiHex = bytesToHex(byteArrayOf(b.toByte(), cc.toByte(), value.toByte()))
+                        logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                        Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+
                         val summary = "[BLE MIDI RX] CC $cc = $value (ch=$chDisplay)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, "")
                         Log.d("KorgMidiService", summary)
+
                         _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.CONTROL_CHANGE, cc, value)
 
                         // Direct forward CC / Modulation to MIDI Output
@@ -978,9 +1015,15 @@ class KorgMidiService : Service() {
                         val pc = msg[i + 1].toInt() and 0x7F
                         val prevName = _currentPatchInfo.value?.customName
                         _currentPatchInfo.value = KorgPatchInfo(currentMsb, currentLsb, pc, currentMode, prevName)
+
+                        val midiHex = bytesToHex(byteArrayOf(b.toByte(), pc.toByte()))
+                        logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                        Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+
                         val summary = "[BLE MIDI RX] PROGRAM CHANGE $pc (ch=$chDisplay)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, "")
                         Log.d("KorgMidiService", summary)
+
                         _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.PROGRAM_CHANGE, pc, 0)
                         i += 2
                         requestCurrentSoundInfo(0)
@@ -990,9 +1033,15 @@ class KorgMidiService : Service() {
                         val lsb = msg[i + 1].toInt() and 0x7F
                         val msb = msg[i + 2].toInt() and 0x7F
                         val pbValue = (msb shl 7) or lsb
+
+                        val midiHex = bytesToHex(byteArrayOf(b.toByte(), lsb.toByte(), msb.toByte()))
+                        logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                        Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+
                         val summary = "[BLE MIDI RX] Pitch Bend $pbValue (ch=$chDisplay)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, "")
                         Log.d("KorgMidiService", summary)
+
                         _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.PITCH_BEND, pbValue, 0)
 
                         // Direct forward Pitch Bend to MIDI Output
@@ -1096,7 +1145,7 @@ class KorgMidiService : Service() {
                     if (sysexBytes.size >= 5) {
                         val slot = sysexBytes[3].toInt() and 0x7F
                         val slotNumber = slot + 1
-                        val summary = "[ESP32 RX] CMD=05 SELECT SLOT index=$slot slot=$slotNumber"
+                        val summary = "[ESP32 RX] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
                         _esp32IncomingSelectSlot.value = slot
