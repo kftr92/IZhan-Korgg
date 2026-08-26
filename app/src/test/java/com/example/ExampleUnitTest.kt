@@ -51,6 +51,16 @@ class ExampleUnitTest {
                     accumulator.write(0xF0)
                 } else if (b < 0x80) {
                     accumulator.write(b)
+                    if (accumulator.size() == 4) {
+                        val currentBuf = accumulator.toByteArray()
+                        if ((currentBuf[0].toInt() and 0xFF) == 0xF0 &&
+                            (currentBuf[1].toInt() and 0xFF) == 0x7D &&
+                            (currentBuf[2].toInt() and 0xFF) == 0x05) {
+                            inSysex = false
+                            results.add(currentBuf)
+                            accumulator.reset()
+                        }
+                    }
                 }
                 i++
                 continue
@@ -189,6 +199,94 @@ class ExampleUnitTest {
         val isKorg = (sysex[0] == 0xF0.toByte() && sysex[1] == 0x42.toByte())
         assertFalse(isEsp32)
         assertTrue(isKorg)
+    }
+
+    @Test
+    fun testUserRequest_Test1_Slot1WithoutF7() {
+        // Input: F0 7D 05 00
+        val raw = byteArrayOf(0xF0.toByte(), 0x7D.toByte(), 0x05.toByte(), 0x00.toByte())
+        val decoded = decodeBleMidi(raw)
+        assertEquals(1, decoded.size)
+        val sysex = decoded[0] as ByteArray
+        assertEquals(4, sysex.size)
+        assertEquals(0x05.toByte(), sysex[2]) // CMD 05
+        val slotIndex = sysex[3].toInt() and 0x7F
+        assertEquals(0, slotIndex)
+        val slotNumber = slotIndex + 1
+        assertEquals(1, slotNumber) // Slot 1
+    }
+
+    @Test
+    fun testUserRequest_Test2_Slot13WithoutF7() {
+        // Input: F0 7D 05 0C
+        val raw = byteArrayOf(0xF0.toByte(), 0x7D.toByte(), 0x05.toByte(), 0x0C.toByte())
+        val decoded = decodeBleMidi(raw)
+        assertEquals(1, decoded.size)
+        val sysex = decoded[0] as ByteArray
+        assertEquals(4, sysex.size)
+        assertEquals(0x05.toByte(), sysex[2]) // CMD 05
+        val slotIndex = sysex[3].toInt() and 0x7F
+        assertEquals(12, slotIndex)
+        val slotNumber = slotIndex + 1
+        assertEquals(13, slotNumber) // Slot 13
+    }
+
+    @Test
+    fun testUserRequest_Test3_Slot14WithoutF7() {
+        // Input: F0 7D 05 0D
+        val raw = byteArrayOf(0xF0.toByte(), 0x7D.toByte(), 0x05.toByte(), 0x0D.toByte())
+        val decoded = decodeBleMidi(raw)
+        assertEquals(1, decoded.size)
+        val sysex = decoded[0] as ByteArray
+        assertEquals(4, sysex.size)
+        assertEquals(0x05.toByte(), sysex[2]) // CMD 05
+        val slotIndex = sysex[3].toInt() and 0x7F
+        assertEquals(13, slotIndex)
+        val slotNumber = slotIndex + 1
+        assertEquals(14, slotNumber) // Slot 14
+    }
+
+    @Test
+    fun testUserRequest_Test4_SequenceSlot13AndNotes() {
+        // Sequence: F0 7D 05 0C followed by 90 33 58 followed by 80 33 40
+        val raw = byteArrayOf(
+            0xF0.toByte(), 0x7D.toByte(), 0x05.toByte(), 0x0C.toByte(),
+            0x90.toByte(), 0x33.toByte(), 0x58.toByte(),
+            0x80.toByte(), 0x33.toByte(), 0x40.toByte()
+        )
+        val decoded = decodeBleMidi(raw)
+        assertEquals(3, decoded.size)
+        
+        // 1. SysEx CMD 05
+        val sysex = decoded[0] as ByteArray
+        assertEquals(0x05.toByte(), sysex[2])
+        val slotNumber = (sysex[3].toInt() and 0x7F) + 1
+        assertEquals(13, slotNumber) // Slot 13
+
+        // 2. Note On
+        val noteOn = decoded[1] as DecodedMidiEvent
+        assertEquals("NOTE_ON", noteOn.type)
+        assertEquals(51, noteOn.noteOrData1) // Note 51 (0x33)
+        assertEquals(88, noteOn.velocityOrData2) // Vel 88 (0x58)
+
+        // 3. Note Off
+        val noteOff = decoded[2] as DecodedMidiEvent
+        assertEquals("NOTE_OFF", noteOff.type)
+        assertEquals(51, noteOff.noteOrData1) // Note 51 (0x33)
+        assertEquals(64, noteOff.velocityOrData2) // Vel 64 (0x40)
+    }
+
+    @Test
+    fun testUserRequest_Test5_NoteOn39Vel89() {
+        // Input: 90 27 59
+        val raw = byteArrayOf(0x90.toByte(), 0x27.toByte(), 0x59.toByte())
+        val decoded = decodeBleMidi(raw)
+        assertEquals(1, decoded.size)
+        val noteOn = decoded[0] as DecodedMidiEvent
+        assertEquals("NOTE_ON", noteOn.type)
+        assertEquals(0, noteOn.channel) // Ch 1 (0-indexed)
+        assertEquals(39, noteOn.noteOrData1) // Note 39 (0x27)
+        assertEquals(89, noteOn.velocityOrData2) // Vel 89 (0x59)
     }
 }
 

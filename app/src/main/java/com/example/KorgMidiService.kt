@@ -945,6 +945,23 @@ class KorgMidiService : Service() {
                 } else if (b < 0x80) {
                     // Valid 7-bit SysEx payload byte
                     sysexAccumulator.write(b)
+
+                    // Special check for ESP32 custom command: F0 7D 05 <slotIndex>
+                    // Custom CMD 05 has a fixed 4-byte format and completes without requiring trailing 0xF7
+                    if (sysexAccumulator.size() == 4) {
+                        val currentBuf = sysexAccumulator.toByteArray()
+                        if ((currentBuf[0].toInt() and 0xFF) == 0xF0 &&
+                            (currentBuf[1].toInt() and 0xFF) == 0x7D &&
+                            (currentBuf[2].toInt() and 0xFF) == 0x05) {
+
+                            inSysex = false
+                            val sysexHex = bytesToHex(currentBuf)
+                            logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $sysexHex", "")
+                            Log.d("KorgMidiService", "[BLE MIDI DECODE] $sysexHex")
+                            processReceivedSysex(currentBuf)
+                            sysexAccumulator.reset()
+                        }
+                    }
                 } else {
                     // Skip intermediate BLE-MIDI timestamp / realtime header bytes inside SysEx stream
                 }
@@ -972,45 +989,55 @@ class KorgMidiService : Service() {
                 val chDisplay = ch + 1
 
                 if (type == 0x90) { // Note On (or Note Off if vel == 0)
-                    val note = msg.getOrNull(i + 1)?.toInt()?.and(0x7F) ?: 0
-                    val vel = msg.getOrNull(i + 2)?.toInt()?.and(0x7F) ?: 0
-                    val isNoteOn = (vel > 0)
-                    val eventType = if (isNoteOn) MidiEventType.NOTE_ON else MidiEventType.NOTE_OFF
+                    if (i + 2 < end) {
+                        val note = msg[i + 1].toInt() and 0x7F
+                        val vel = msg[i + 2].toInt() and 0x7F
+                        val isNoteOn = (vel > 0)
+                        val eventType = if (isNoteOn) MidiEventType.NOTE_ON else MidiEventType.NOTE_OFF
 
-                    val midiHex = bytesToHex(byteArrayOf(b.toByte(), note.toByte(), vel.toByte()))
-                    logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
-                    Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+                        val midiHex = bytesToHex(byteArrayOf(b.toByte(), note.toByte(), vel.toByte()))
+                        logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                        Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
 
-                    val summary = if (isNoteOn) {
-                        "[BLE MIDI RX] NOTE ON ch=$chDisplay note=$note velocity=$vel"
+                        val summary = if (isNoteOn) {
+                            "[BLE MIDI RX] NOTE ON ch=$chDisplay note=$note velocity=$vel"
+                        } else {
+                            "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
+                        }
+                        val diagParsed = "[MIDI PARSED] type=${if (isNoteOn) "NOTE_ON" else "NOTE_OFF"} ch=$chDisplay note=$note velocity=$vel"
+                        _lastParsedMidiSummary.value = diagParsed
+                        Log.d("KorgMidiService", diagParsed)
+                        logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
+                        Log.d("KorgMidiService", summary)
+
+                        _incomingMidiEvent.value = null
+                        _incomingMidiEvent.value = IncomingMidiInputEvent(ch, eventType, note, vel)
+                        i += 3
                     } else {
-                        "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
+                        i = end
                     }
-                    val diagParsed = "[MIDI PARSED] type=${if (isNoteOn) "NOTE_ON" else "NOTE_OFF"} ch=$chDisplay note=$note velocity=$vel"
-                    _lastParsedMidiSummary.value = diagParsed
-                    Log.d("KorgMidiService", diagParsed)
-                    logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
-                    Log.d("KorgMidiService", summary)
-
-                    _incomingMidiEvent.value = IncomingMidiInputEvent(ch, eventType, note, vel)
-                    i += 3
                 } else if (type == 0x80) { // Note Off
-                    val note = msg.getOrNull(i + 1)?.toInt()?.and(0x7F) ?: 0
-                    val vel = msg.getOrNull(i + 2)?.toInt()?.and(0x7F) ?: 0
+                    if (i + 2 < end) {
+                        val note = msg[i + 1].toInt() and 0x7F
+                        val vel = msg[i + 2].toInt() and 0x7F
 
-                    val midiHex = bytesToHex(byteArrayOf(b.toByte(), note.toByte(), vel.toByte()))
-                    logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
-                    Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
+                        val midiHex = bytesToHex(byteArrayOf(b.toByte(), note.toByte(), vel.toByte()))
+                        logTraffic(MidiTrafficLog.Direction.IN, "[BLE MIDI DECODE] $midiHex", "")
+                        Log.d("KorgMidiService", "[BLE MIDI DECODE] $midiHex")
 
-                    val summary = "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
-                    val diagParsed = "[MIDI PARSED] type=NOTE_OFF ch=$chDisplay note=$note velocity=$vel"
-                    _lastParsedMidiSummary.value = diagParsed
-                    Log.d("KorgMidiService", diagParsed)
-                    logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
-                    Log.d("KorgMidiService", summary)
+                        val summary = "[BLE MIDI RX] NOTE OFF ch=$chDisplay note=$note velocity=$vel"
+                        val diagParsed = "[MIDI PARSED] type=NOTE_OFF ch=$chDisplay note=$note velocity=$vel"
+                        _lastParsedMidiSummary.value = diagParsed
+                        Log.d("KorgMidiService", diagParsed)
+                        logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagParsed", "")
+                        Log.d("KorgMidiService", summary)
 
-                    _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.NOTE_OFF, note, vel)
-                    i += 3
+                        _incomingMidiEvent.value = null
+                        _incomingMidiEvent.value = IncomingMidiInputEvent(ch, MidiEventType.NOTE_OFF, note, vel)
+                        i += 3
+                    } else {
+                        i = end
+                    }
                 } else if (type == 0xB0) { // Control Change
                     if (i + 2 < end) {
                         val cc = msg[i + 1].toInt() and 0x7F
@@ -1181,15 +1208,16 @@ class KorgMidiService : Service() {
                     }
                 }
                 0x05 -> { // SELECT_SLOT (0x05)
-                    if (sysexBytes.size >= 5) {
+                    if (sysexBytes.size >= 4) {
                         val slot = sysexBytes[3].toInt() and 0x7F
                         val slotNumber = slot + 1
                         val summary = "[ESP32 RX] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
-                        val diagCmd = "[ESP32 CMD RECEIVED]\ncmd=05\nslotIndex=$slot\nslot=$slotNumber"
+                        val diagCmd = "[ESP32 CMD RECEIVED] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
                         _lastEsp32CommandSummary.value = "CMD 05 (Select Slot $slotNumber, Index $slot)"
                         Log.d("KorgMidiService", diagCmd)
                         logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagCmd", bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
+                        _esp32IncomingSelectSlot.value = null
                         _esp32IncomingSelectSlot.value = slot
                     } else {
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Select Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))

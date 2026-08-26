@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.midi.MidiDeviceInfo
 import android.os.Build
@@ -21,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -29,6 +31,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.animation.AnimatedVisibility
@@ -66,6 +69,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
@@ -78,13 +82,16 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -2921,6 +2928,9 @@ fun MidiBleDiagnosticDialog(
     onClearLogs: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
     val statusColor = when (connectionStatus) {
         KorgConnectionStatus.CONNECTED -> Color(0xFF00E676)
         KorgConnectionStatus.CONNECTING, KorgConnectionStatus.SCANNING -> Color(0xFFFF9E00)
@@ -2935,13 +2945,48 @@ fun MidiBleDiagnosticDialog(
         ?: selectedOutputDevice?.properties?.getString(MidiDeviceInfo.PROPERTY_PRODUCT)
         ?: "None"
 
+    fun buildDiagnosticReportText(): String {
+        val sb = StringBuilder()
+        sb.appendLine("==========================================")
+        sb.appendLine("IZhan-Korg MIDI Diagnostic Report")
+        sb.appendLine("==========================================")
+        sb.appendLine("Connection Status : ${connectionStatus.name}")
+        sb.appendLine("MIDI Input Device : $inputDevName")
+        sb.appendLine("MIDI Output Device: $outputDevName")
+        sb.appendLine("Last RAW MIDI     : ${if (lastRawMidiHex.isNotBlank()) lastRawMidiHex else "(None)"}")
+        sb.appendLine("Last Parsed MIDI  : ${if (lastParsedMidiSummary.isNotBlank()) lastParsedMidiSummary else "(None)"}")
+        sb.appendLine("Last ESP32 Command: ${if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(None)"}")
+        sb.appendLine("Active UI Slot    : Slot ${activeSlotIndex + 1} ($activePresetName)")
+        sb.appendLine("MIDI Learn State  : ${if (midiLearningPadIndex != null) "Slot ${midiLearningPadIndex + 1} [ACTIVE]" else "IDLE"}")
+        sb.appendLine("==========================================")
+        sb.appendLine("EVENT LOG (${trafficLogs.size} events):")
+        sb.appendLine("==========================================")
+        if (trafficLogs.isEmpty()) {
+            sb.appendLine("(No events logged yet)")
+        } else {
+            trafficLogs.forEach { log ->
+                val dir = when (log.direction) {
+                    MidiTrafficLog.Direction.IN -> "◄ RX"
+                    MidiTrafficLog.Direction.OUT -> "► TX"
+                    MidiTrafficLog.Direction.SYSTEM -> "● SYS"
+                }
+                sb.appendLine("[${log.timestamp}] $dir ${log.summary}")
+                if (log.hexDump.isNotBlank()) {
+                    sb.appendLine("    HEX: ${log.hexDump}")
+                }
+            }
+        }
+        sb.appendLine("==========================================")
+        return sb.toString()
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier
-            .fillMaxWidth(0.95f)
-            .widthIn(max = 880.dp)
-            .padding(vertical = 8.dp),
+            .fillMaxWidth(0.98f)
+            .fillMaxHeight(0.94f)
+            .padding(4.dp),
         title = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2964,137 +3009,144 @@ fun MidiBleDiagnosticDialog(
                         letterSpacing = 0.5.sp
                     )
                 }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White, modifier = Modifier.size(18.dp))
                 }
             }
         },
-        containerColor = Color(0xFF050E20),
+        containerColor = Color(0xFF040B18),
         text = {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 480.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Top Status Grid Card
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF020712)),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, Color(0xFF13264A), RoundedCornerShape(8.dp))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                // Compact Top Status Grid Card
+                SelectionContainer {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF020712)),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color(0xFF13264A), RoundedCornerShape(8.dp))
                     ) {
-                        // Line 1: Connection & Devices
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        Column(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
-                            Text(
-                                "BLE / MIDI Status: ${connectionStatus.name}",
-                                color = statusColor,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.5.sp
-                            )
-                            Text(
-                                "IN: $inputDevName  |  OUT: $outputDevName",
-                                color = Color(0xFF80D8FF),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
+                            // Line 1: Connection & Devices
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "BLE / MIDI Status: ${connectionStatus.name}",
+                                    color = statusColor,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    "IN: $inputDevName | OUT: $outputDevName",
+                                    color = Color(0xFF80D8FF),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
 
-                        // Line 2: Last RAW MIDI received at MidiReceiver.onSend()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "Last RAW MIDI:",
-                                color = Color.Gray,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                if (lastRawMidiHex.isNotBlank()) lastRawMidiHex else "(No raw bytes yet)",
-                                color = if (lastRawMidiHex.isNotBlank()) Color(0xFF00E5FF) else Color.DarkGray,
-                                fontSize = 10.5.sp,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                            // Line 2: Last RAW MIDI received at MidiReceiver.onSend()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Last RAW MIDI:",
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    if (lastRawMidiHex.isNotBlank()) lastRawMidiHex else "(No raw bytes yet)",
+                                    color = if (lastRawMidiHex.isNotBlank()) Color(0xFF00E5FF) else Color.DarkGray,
+                                    fontSize = 10.5.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                                )
+                            }
 
-                        // Line 3: Parsed MIDI Event
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "Parsed MIDI:",
-                                color = Color.Gray,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                if (lastParsedMidiSummary.isNotBlank()) lastParsedMidiSummary else "(Waiting for Note/CC)",
-                                color = if (lastParsedMidiSummary.isNotBlank()) Color(0xFF69F0AE) else Color.DarkGray,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                            // Line 3: Parsed MIDI Event & ESP32 Command
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Parsed MIDI: " + if (lastParsedMidiSummary.isNotBlank()) lastParsedMidiSummary else "(Waiting)",
+                                    color = if (lastParsedMidiSummary.isNotBlank()) Color(0xFF69F0AE) else Color.DarkGray,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier
+                                        .weight(1f, fill = false)
+                                        .horizontalScroll(rememberScrollState())
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "ESP32 CMD: " + if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(None)",
+                                    color = if (lastEsp32CommandSummary.isNotBlank()) Color(0xFFFFD54F) else Color.DarkGray,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier
+                                        .weight(1f, fill = false)
+                                        .horizontalScroll(rememberScrollState())
+                                )
+                            }
 
-                        // Line 4: ESP32 SysEx & Command (CMD 05 / 02 / 04)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "ESP32 Command:",
-                                color = Color.Gray,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(No SysEx CMD)",
-                                color = if (lastEsp32CommandSummary.isNotBlank()) Color(0xFFFFD54F) else Color.DarkGray,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        // Line 5: Active Slot & MIDI Learn State
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "Active UI Slot: Slot ${activeSlotIndex + 1} ($activePresetName)",
-                                color = Color(0xFFFF9E00),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                if (midiLearningPadIndex != null) "MIDI LEARN: Slot ${midiLearningPadIndex + 1} [ACTIVE]" else "MIDI Learn: IDLE",
-                                color = if (midiLearningPadIndex != null) Color(0xFFFF1744) else Color(0xFFB0BEC5),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            // Line 4: Active Slot & MIDI Learn State
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Active UI Slot: Slot ${activeSlotIndex + 1} ($activePresetName)",
+                                    color = Color(0xFFFF9E00),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    if (midiLearningPadIndex != null) "MIDI LEARN: Slot ${midiLearningPadIndex + 1} [ACTIVE]" else "MIDI Learn: IDLE",
+                                    color = if (midiLearningPadIndex != null) Color(0xFFFF1744) else Color(0xFFB0BEC5),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
 
-                // Traffic Log Stream Box
+                // Header for Event Log Area
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "LIVE EVENT LOG (${trafficLogs.size} events - select/long-press text to copy)",
+                        color = Color(0xFF80D8FF),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                // Large Scrollable Traffic Log Stream Box with SelectionContainer
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .background(Color(0xFF02050E), RoundedCornerShape(6.dp))
                         .border(1.dp, Color(0xFF0C1935), RoundedCornerShape(6.dp))
-                        .padding(6.dp)
+                        .padding(4.dp)
                 ) {
                     if (trafficLogs.isEmpty()) {
                         Text(
@@ -3110,44 +3162,54 @@ fun MidiBleDiagnosticDialog(
                             scrollState.animateScrollTo(scrollState.maxValue)
                         }
 
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scrollState),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            trafficLogs.takeLast(100).forEach { log ->
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF061024), RoundedCornerShape(4.dp))
-                                        .padding(5.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                        SelectionContainer {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(scrollState),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                trafficLogs.takeLast(100).forEach { log ->
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0xFF061024), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 6.dp, vertical = 4.dp)
                                     ) {
-                                        val (dirText, dirColor) = when (log.direction) {
-                                            MidiTrafficLog.Direction.IN -> "◄ RX" to Color(0xFF00E5FF)
-                                            MidiTrafficLog.Direction.OUT -> "► TX" to Color(0xFFFF9100)
-                                            MidiTrafficLog.Direction.SYSTEM -> "● SYS" to Color(0xFFE040FB)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val (dirText, dirColor) = when (log.direction) {
+                                                MidiTrafficLog.Direction.IN -> "◄ RX" to Color(0xFF00E5FF)
+                                                MidiTrafficLog.Direction.OUT -> "► TX" to Color(0xFFFF9100)
+                                                MidiTrafficLog.Direction.SYSTEM -> "● SYS" to Color(0xFFE040FB)
+                                            }
+                                            Text(dirText, color = dirColor, fontWeight = FontWeight.ExtraBold, fontSize = 9.5.sp)
+                                            Text(log.timestamp, color = Color.Gray, fontSize = 8.5.sp)
                                         }
-                                        Text(dirText, color = dirColor, fontWeight = FontWeight.ExtraBold, fontSize = 9.5.sp)
-                                        Text(log.timestamp, color = Color.Gray, fontSize = 8.5.sp)
-                                    }
-                                    Text(
-                                        log.summary,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 10.5.sp
-                                    )
-                                    if (log.hexDump.isNotBlank()) {
+
+                                        // Full un-truncated Summary with horizontal scroll
                                         Text(
-                                            log.hexDump,
-                                            color = Color(0xFF80D8FF),
-                                            fontSize = 9.sp,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            text = log.summary,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 10.sp,
+                                            modifier = Modifier.horizontalScroll(rememberScrollState())
                                         )
+
+                                        // Full un-truncated Hex Dump with horizontal scroll
+                                        if (log.hexDump.isNotBlank()) {
+                                            Text(
+                                                text = log.hexDump,
+                                                color = Color(0xFF80D8FF),
+                                                fontSize = 9.sp,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.horizontalScroll(rememberScrollState())
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -3155,37 +3217,74 @@ fun MidiBleDiagnosticDialog(
                     }
                 }
 
-                // Bottom Action Bar inside Dialog
+                // Bottom Action Bar with COPY ALL, EXPORT/SHARE, CLEAR LOGS, and CLOSE
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "${trafficLogs.size} events logged",
-                        color = Color.Gray,
-                        fontSize = 10.5.sp
-                    )
-
+                    // Left Actions: COPY ALL & EXPORT/SHARE
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Button(
-                            onClick = onClearLogs,
+                            onClick = {
+                                val report = buildDiagnosticReportText()
+                                clipboardManager.setText(AnnotatedString(report))
+                                Toast.makeText(context, "All diagnostic logs copied to clipboard", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0277BD)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy All Logs", tint = Color.White, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("COPY ALL", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                val report = buildDiagnosticReportText()
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, report)
+                                    putExtra(Intent.EXTRA_SUBJECT, "IZhan-Korg MIDI Diagnostic Log")
+                                    type = "text/plain"
+                                }
+                                val shareIntent = Intent.createChooser(sendIntent, "Share MIDI Diagnostic Log")
+                                context.startActivity(shareIntent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00695C)),
+                            shape = RoundedCornerShape(6.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = "Export / Share Logs", tint = Color.White, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("EXPORT / SHARE", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Right Actions: CLEAR LOGS & CLOSE
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(
+                            onClick = {
+                                onClearLogs()
+                                Toast.makeText(context, "Diagnostic logs cleared", Toast.LENGTH_SHORT).show()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF801313)),
                             shape = RoundedCornerShape(6.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = "Clear", tint = Color.White, modifier = Modifier.size(13.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("CLEAR LOGS", fontSize = 10.5.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("CLEAR", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
                             onClick = onDismiss,
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E2248)),
                             shape = RoundedCornerShape(6.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text("CLOSE", fontSize = 10.5.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("CLOSE", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
