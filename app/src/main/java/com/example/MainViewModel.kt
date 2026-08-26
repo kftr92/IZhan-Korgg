@@ -442,7 +442,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val bankLSB = preset.lsb.coerceIn(0, 127)
         val progNum = preset.program.coerceIn(0, 127)
         val outChannel = (if (preset.midiChannel in 0..15) preset.midiChannel else _channel.value).coerceIn(0, 15)
-        val outNote = if (preset.outputNote in 0..127) preset.outputNote else 127
+        
+        // Strict Mode rules for ESP32 bridge:
+        // When NOTE mode: send outNote (0..126).
+        // When PGM mode: send 127 to indicate Program Change only (no note output).
+        val isNoteMode = preset.buttonType.equals("NOTE", ignoreCase = true) || (preset.buttonType.isBlank() && preset.outputNote in 0..126)
+        val outNote = if (isNoteMode) {
+            if (preset.outputNote in 0..126) preset.outputNote else (60 + slotIndex).coerceIn(0, 126)
+        } else {
+            127
+        }
 
         midiController.sendEsp32SlotConfig(
             slotIndex = slotIndex,
@@ -472,7 +481,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         presets.forEachIndexed { idx, preset ->
             midiController.logTraffic(
                 MidiTrafficLog.Direction.SYSTEM,
-                "[ESP32 PUSH] slot=${idx + 1} index=$idx",
+                "[ESP32 PUSH] slot=${idx + 1} index=$idx type=${preset.buttonType}",
                 ""
             )
             sendEsp32SlotConfig(idx, preset)
@@ -492,17 +501,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _selectedPresetIndex.value = index
 
         val targetChannel = if (preset.midiChannel in 0..15) preset.midiChannel else _channel.value
+        val isNoteMode = preset.buttonType.equals("NOTE", ignoreCase = true) || (preset.buttonType.isBlank() && preset.outputNote in 0..126)
 
-        val outNoteToSend = if (preset.outputNote >= 0) {
-            preset.outputNote
-        } else if (preset.buttonType == "NOTE") {
-            (60 + index).coerceIn(0, 127)
-        } else {
-            -1
-        }
-
-        // Trigger MIDI Note Output if configured (held until release)
-        if (outNoteToSend in 0..127) {
+        if (isNoteMode) {
+            // MODE NOTE MIDI: ONLY send Note On. NO Program Change or Mode Change!
+            val outNoteToSend = if (preset.outputNote in 0..126) {
+                preset.outputNote
+            } else {
+                (60 + index).coerceIn(0, 126)
+            }
             val transposedNote = (outNoteToSend - _transpose.value).coerceIn(0, 127)
             val velocity = preset.outputVelocity.coerceIn(1, 127)
             activePadNotes[index]?.let { (prevNote, prevChan) ->
@@ -510,38 +517,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             activePadNotes[index] = Pair(transposedNote, targetChannel)
             midiController.sendNoteOn(targetChannel, transposedNote, velocity)
-        }
+        } else {
+            // MODE PROGRAM CHANGE (PGM / DEFAULT / SX / CUST): ONLY send Bank/Program/Mode. NO Note On!
+            midiController.updateCurrentPatch(
+                msb = preset.msb,
+                lsb = preset.lsb,
+                program = preset.program,
+                mode = preset.mode,
+                customName = if (preset.name.startsWith("Sound ") && preset.name.length <= 8) null else preset.name
+            )
 
-        midiController.updateCurrentPatch(
-            msb = preset.msb,
-            lsb = preset.lsb,
-            program = preset.program,
-            mode = preset.mode,
-            customName = if (preset.name.startsWith("Sound ") && preset.name.length <= 8) null else preset.name
-        )
+            // Switch Korg mode (0 = Combi, 2 = Prog) before sending PC/CC
+            if (preset.mode.equals("Combi", ignoreCase = true)) {
+                midiController.sendModeChange(targetChannel, 0)
+            } else if (preset.mode.equals("Prog", ignoreCase = true)) {
+                midiController.sendModeChange(targetChannel, 2)
+            }
 
-        // Switch Korg mode (0 = Combi, 2 = Prog) before sending PC/CC
-        if (preset.mode.equals("Combi", ignoreCase = true)) {
-            midiController.sendModeChange(targetChannel, 0)
-        } else if (preset.mode.equals("Prog", ignoreCase = true)) {
-            midiController.sendModeChange(targetChannel, 2)
-        }
-
-        if (preset.buttonType == "PGM" || preset.buttonType == "DEFAULT" || preset.buttonType.isBlank() || preset.outputNote < 0) {
             midiController.sendProgramChange(
                 channel = targetChannel,
                 msb = preset.msb,
                 lsb = preset.lsb,
                 program = preset.program
             )
-        }
 
-        if (preset.sysexHex.isNotBlank()) {
-            midiController.sendSysexHex(preset.sysexHex)
-        }
+            if (preset.sysexHex.isNotBlank()) {
+                midiController.sendSysexHex(preset.sysexHex)
+            }
 
-        // Request live active program name from connected Korg Krome hardware
-        midiController.requestCurrentSoundInfo(targetChannel)
+            // Request live active program name from connected Korg hardware
+            midiController.requestCurrentSoundInfo(targetChannel)
+        }
     }
 
     fun onPadRelease(index: Int) {
@@ -554,14 +560,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playPreset(index: Int) {
         onPadPress(index)
         val preset = _soundPresets.value.getOrNull(index) ?: return
-        val outNoteToSend = if (preset.outputNote >= 0) {
-            preset.outputNote
-        } else if (preset.buttonType == "NOTE") {
-            (60 + index).coerceIn(0, 127)
-        } else {
-            -1
-        }
-        if (outNoteToSend in 0..127) {
+        val isNoteMode = preset.buttonType.equals("NOTE", ignoreCase = true) || (preset.buttonType.isBlank() && preset.outputNote in 0..126)
+        if (isNoteMode) {
             viewModelScope.launch {
                 kotlinx.coroutines.delay(300)
                 onPadRelease(index)

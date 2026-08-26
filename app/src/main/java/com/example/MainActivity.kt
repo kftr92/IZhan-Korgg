@@ -717,12 +717,12 @@ fun MidiControllerApp(viewModel: MainViewModel) {
     // Sound Slot Edit Dialog
     if (editPresetIndex != null) {
         val preset = soundPresets[editPresetIndex!!]
-        var name by remember { mutableStateOf(preset.name) }
-        var msb by remember { mutableStateOf(preset.msb.toString()) }
-        var lsb by remember { mutableStateOf(preset.lsb.toString()) }
-        var program by remember { mutableStateOf(preset.program.toString()) }
-        var sysexHex by remember { mutableStateOf(preset.sysexHex) }
-        var selectedMode by remember { mutableStateOf(preset.mode) } // Prog, Combi, Favourites
+        var name by remember(preset) { mutableStateOf(preset.name) }
+        var msb by remember(preset) { mutableStateOf(preset.msb.toString()) }
+        var lsb by remember(preset) { mutableStateOf(preset.lsb.toString()) }
+        var program by remember(preset) { mutableStateOf(preset.program.toString()) }
+        var sysexHex by remember(preset) { mutableStateOf(preset.sysexHex) }
+        var selectedMode by remember(preset) { mutableStateOf(preset.mode) } // Prog, Combi, Favourites
         var selectedButtonType by remember(preset.buttonType) { mutableStateOf(if (preset.buttonType.isBlank()) "PGM" else preset.buttonType) } // PGM, NOTE, CC, SX, CUST
         var triggerNoteState by remember(preset.triggerNote) { mutableIntStateOf(preset.triggerNote) }
         var outputNoteState by remember(preset.outputNote) { mutableStateOf(if (preset.outputNote >= 0) preset.outputNote.toString() else "") }
@@ -730,8 +730,21 @@ fun MidiControllerApp(viewModel: MainViewModel) {
         var midiChannelState by remember(preset.midiChannel) { mutableIntStateOf(preset.midiChannel) }
         val context = androidx.compose.ui.platform.LocalContext.current
 
+        LaunchedEffect(preset.triggerNote) {
+            triggerNoteState = preset.triggerNote
+        }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                viewModel.cancelMidiLearn()
+            }
+        }
+
         AlertDialog(
-            onDismissRequest = { editPresetIndex = null },
+            onDismissRequest = {
+                viewModel.cancelMidiLearn()
+                editPresetIndex = null
+            },
             title = {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -739,7 +752,10 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Edit Sound Slot ${editPresetIndex!! + 1}", color = Color.White, fontWeight = FontWeight.Bold)
-                    IconButton(onClick = { editPresetIndex = null }) {
+                    IconButton(onClick = {
+                        viewModel.cancelMidiLearn()
+                        editPresetIndex = null
+                    }) {
                         Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
                     }
                 }
@@ -1811,6 +1827,16 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                     // Sound Slot Buttons Grid (2 rows x 6 columns = 12 slots per page)
                     val pageCount = maxOf(1, (soundPresets.size + 11) / 12)
                     val pagerState = rememberPagerState(pageCount = { pageCount })
+
+                    val activeOrSelectedPad = activeInputTriggerPadIndex ?: selectedPresetIndex
+                    LaunchedEffect(activeOrSelectedPad, pageCount) {
+                        if (activeOrSelectedPad in soundPresets.indices) {
+                            val targetPage = activeOrSelectedPad / 12
+                            if (targetPage in 0 until pageCount && pagerState.currentPage != targetPage) {
+                                pagerState.animateScrollToPage(targetPage)
+                            }
+                        }
+                    }
 
                     Column(
                         modifier = Modifier
