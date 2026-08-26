@@ -152,6 +152,9 @@ class KorgMidiService : Service() {
     private var inputPort: MidiInputPort? = null
     private var outputPort: MidiOutputPort? = null
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingInitRunnable: Runnable? = null
+
     private var currentMsb = 0
     private var currentLsb = 0
     private var currentMode = "Prog"
@@ -187,6 +190,7 @@ class KorgMidiService : Service() {
                 currentList[index] = item
             } else {
                 currentList.add(item)
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DEVICE FOUND", "$name (${device.address})")
             }
             _scannedBleDevices.value = currentList
         }
@@ -194,20 +198,22 @@ class KorgMidiService : Service() {
         override fun onScanFailed(errorCode: Int) {
             Log.e("KorgMidiService", "BLE Scan Failed: $errorCode")
             _isScanningBle.value = false
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Scan Failed: Error code $errorCode", "")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] SCAN FAILED", "Error code: $errorCode")
         }
     }
 
     private val deviceCallback = object : MidiManager.DeviceCallback() {
         override fun onDeviceAdded(device: MidiDeviceInfo) {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Device Added: ${getDeviceDisplayName(device)}", "")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DEVICE ADDED", getDeviceDisplayName(device))
             refreshDevices()
         }
 
         override fun onDeviceRemoved(device: MidiDeviceInfo) {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Device Removed: ${getDeviceDisplayName(device)}", "")
-            if (_selectedDeviceInfo.value?.id == device.id) {
-                disconnectDevice("Selected MIDI device disconnected")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DEVICE REMOVED", getDeviceDisplayName(device))
+            if (_selectedDeviceInfo.value?.id == device.id ||
+                _selectedInputDeviceInfo.value?.id == device.id ||
+                _selectedOutputDeviceInfo.value?.id == device.id) {
+                disconnectDevice("MIDI device disconnected: ${getDeviceDisplayName(device)}")
             }
             refreshDevices()
         }
@@ -235,7 +241,7 @@ class KorgMidiService : Service() {
     override fun onCreate() {
         super.onCreate()
         midiManager = getSystemService(Context.MIDI_SERVICE) as MidiManager
-        midiManager.registerDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
+        midiManager.registerDeviceCallback(deviceCallback, mainHandler)
         refreshDevices()
         logTraffic(MidiTrafficLog.Direction.SYSTEM, "Korg MIDI Manager Service Started", "")
     }
@@ -249,34 +255,12 @@ class KorgMidiService : Service() {
     }
 
     fun refreshDevices() {
-        _connectionStatus.value = KorgConnectionStatus.SCANNING
         val devices = midiManager.devices.filter { it.inputPortCount > 0 || it.outputPortCount > 0 }
         _availableDevices.value = devices
 
-        if (devices.isEmpty()) {
+        if (devices.isEmpty() && activeInputMidiDevice == null && activeOutputMidiDevice == null) {
             _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
             _statusMessage.value = "No MIDI hardware connected"
-            return
-        }
-
-        val autoSelectInput = devices.firstOrNull { it.outputPortCount > 0 && isKorgDevice(it) }
-            ?: devices.firstOrNull { it.outputPortCount > 0 }
-
-        val autoSelectOutput = devices.firstOrNull { it.inputPortCount > 0 && isKorgDevice(it) }
-            ?: devices.firstOrNull { it.inputPortCount > 0 }
-
-        if (_selectedInputDeviceInfo.value == null && autoSelectInput != null) {
-            connectInputDevice(autoSelectInput)
-        }
-
-        if (_selectedOutputDeviceInfo.value == null && autoSelectOutput != null) {
-            connectOutputDevice(autoSelectOutput)
-        }
-
-        if (activeOutputMidiDevice != null || activeInputMidiDevice != null) {
-            _connectionStatus.value = KorgConnectionStatus.CONNECTED
-        } else {
-            _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
         }
     }
 
@@ -319,7 +303,7 @@ class KorgMidiService : Service() {
         }
 
         try {
-            // First collect bonded/paired Bluetooth devices
+            // Collect bonded/paired Bluetooth devices first
             val bonded = try {
                 adapter.bondedDevices?.map { dev ->
                     val devName = try { dev.name ?: dev.address } catch (e: SecurityException) { dev.address }
@@ -338,7 +322,7 @@ class KorgMidiService : Service() {
 
             _scannedBleDevices.value = bonded
             _isScanningBle.value = true
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Starting BLE MIDI Scan...", "")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] SCAN START", "Starting low-latency BLE scan...")
 
             val scanner = adapter.bluetoothLeScanner
             if (scanner != null) {
@@ -357,7 +341,7 @@ class KorgMidiService : Service() {
                 }
 
                 // Auto stop scan after 12 seconds to save battery
-                Handler(Looper.getMainLooper()).postDelayed({
+                mainHandler.postDelayed({
                     stopBleScan()
                 }, 12000)
             } else {
@@ -382,80 +366,128 @@ class KorgMidiService : Service() {
             // Ignore
         }
         _isScanningBle.value = false
-        logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE MIDI Scan Stopped", "")
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] SCAN STOPPED", "")
     }
 
     fun connectBleDevice(bluetoothDevice: BluetoothDevice, asInput: Boolean = true, asOutput: Boolean = true) {
         val devName = try { bluetoothDevice.name ?: bluetoothDevice.address } catch (e: SecurityException) { bluetoothDevice.address }
+        
+        // Clean disconnect any stale session prior to connecting
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] RECONNECT", "Disconnecting previous session before opening $devName")
+        disconnectDevice("Preparing connection to $devName")
+
         _statusMessage.value = "Connecting to BLE MIDI: $devName..."
-        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Opening BLE MIDI Device: $devName", bluetoothDevice.address)
+        _connectionStatus.value = KorgConnectionStatus.CONNECTING
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DEVICE OPEN", "Connecting to $devName (${bluetoothDevice.address})")
 
         try {
             midiManager.openBluetoothDevice(bluetoothDevice, { midiDevice ->
                 if (midiDevice != null) {
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DEVICE OPEN", "Success: $devName (id=${midiDevice.info.id})")
                     _openedBleMidiDevices[bluetoothDevice.address] = midiDevice
-                    logTraffic(
-                        MidiTrafficLog.Direction.SYSTEM,
-                        "BLE MIDI Connected: $devName",
-                        "Ports: IN=${midiDevice.info.inputPortCount}, OUT=${midiDevice.info.outputPortCount}"
-                    )
-                    refreshDevices()
+                    activeInputMidiDevice = midiDevice
+                    activeOutputMidiDevice = midiDevice
 
+                    // Open Input Receiver Port (reads incoming MIDI from peripheral)
                     if (asInput && midiDevice.info.outputPortCount > 0) {
-                        connectInputDevice(midiDevice.info)
-                    }
-                    if (asOutput && midiDevice.info.inputPortCount > 0) {
-                        connectOutputDevice(midiDevice.info)
+                        try {
+                            outputPort = midiDevice.openOutputPort(0)
+                            if (outputPort != null) {
+                                outputPort?.connect(midiReceiver)
+                                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] INPUT PORT OPEN", "Port 0 opened")
+                                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] RECEIVER ATTACHED", "MidiReceiver connected to outputPort 0")
+                            } else {
+                                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "Failed to open outputPort (Input Receiver)")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("KorgMidiService", "Error opening outputPort", e)
+                            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "outputPort exception: ${e.localizedMessage}")
+                        }
                     }
 
-                    _scannedBleDevices.value = _scannedBleDevices.value.map {
-                        if (it.address == bluetoothDevice.address) it.copy(isConnected = true) else it
+                    // Open Output Sender Port (transmits outgoing MIDI to peripheral)
+                    if (asOutput && midiDevice.info.inputPortCount > 0) {
+                        try {
+                            inputPort = midiDevice.openInputPort(0)
+                            if (inputPort != null) {
+                                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] OUTPUT PORT OPEN", "Port 0 opened")
+                            } else {
+                                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "Failed to open inputPort (Output Sender)")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("KorgMidiService", "Error opening inputPort", e)
+                            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "inputPort exception: ${e.localizedMessage}")
+                        }
                     }
-                    _statusMessage.value = "Connected to BLE: $devName"
+
+                    val isInputReady = !asInput || (outputPort != null)
+                    val isOutputReady = !asOutput || (inputPort != null)
+
+                    if (isInputReady && isOutputReady) {
+                        _selectedDeviceInfo.value = midiDevice.info
+                        _selectedInputDeviceInfo.value = if (asInput) midiDevice.info else null
+                        _selectedOutputDeviceInfo.value = if (asOutput) midiDevice.info else null
+                        _connectionStatus.value = KorgConnectionStatus.CONNECTED
+                        _statusMessage.value = "Connected to $devName"
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] MIDI READY", "Input & Output ports active and verified")
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", devName)
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
+
+                        _scannedBleDevices.value = _scannedBleDevices.value.map {
+                            if (it.address == bluetoothDevice.address) it.copy(isConnected = true) else it
+                        }
+
+                        // Schedule deferred dump & patch request only after full readiness
+                        pendingInitRunnable?.let { mainHandler.removeCallbacks(it) }
+                        pendingInitRunnable = Runnable {
+                            if (_connectionStatus.value == KorgConnectionStatus.CONNECTED && inputPort != null) {
+                                requestCurrentSoundInfo(0)
+                                sendEsp32DumpRequest()
+                            }
+                        }
+                        mainHandler.postDelayed(pendingInitRunnable!!, 350)
+                    } else {
+                        _connectionStatus.value = KorgConnectionStatus.ERROR
+                        _statusMessage.value = "Failed to initialize ports on $devName"
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR: Ports not ready", "InputReady=$isInputReady OutputReady=$isOutputReady")
+                    }
                 } else {
+                    _connectionStatus.value = KorgConnectionStatus.ERROR
                     _statusMessage.value = "Failed to connect BLE MIDI: $devName"
-                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open BLE MIDI: $devName", "")
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "openBluetoothDevice returned null for $devName")
                 }
-            }, Handler(Looper.getMainLooper()))
+            }, mainHandler)
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error opening BLE MIDI device", e)
+            _connectionStatus.value = KorgConnectionStatus.ERROR
             _statusMessage.value = "BLE Connection Error: ${e.localizedMessage}"
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE Connection Error", e.localizedMessage ?: "")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", e.localizedMessage ?: "Unknown connection error")
         }
     }
 
     fun disconnectBleDevice(bluetoothDevice: BluetoothDevice) {
-        val midiDevice = _openedBleMidiDevices.remove(bluetoothDevice.address)
-        if (midiDevice != null) {
-            if (_selectedInputDeviceInfo.value?.id == midiDevice.info.id) {
-                connectInputDevice(null)
-            }
-            if (_selectedOutputDeviceInfo.value?.id == midiDevice.info.id) {
-                connectOutputDevice(null)
-            }
-            try {
-                midiDevice.close()
-            } catch (e: Exception) {
-                Log.e("KorgMidiService", "Error closing BLE MIDI device", e)
-            }
-        }
-        _scannedBleDevices.value = _scannedBleDevices.value.map {
-            if (it.address == bluetoothDevice.address) it.copy(isConnected = false) else it
-        }
-        refreshDevices()
+        disconnectDevice("BLE Device Disconnected: ${bluetoothDevice.address}")
     }
 
     fun connectInputDevice(deviceInfo: MidiDeviceInfo?) {
         if (deviceInfo == null) {
-            outputPort?.disconnect(midiReceiver)
-            outputPort?.close()
-            outputPort = null
+            if (outputPort != null) {
+                try {
+                    outputPort?.disconnect(midiReceiver)
+                    outputPort?.close()
+                } catch (e: Exception) {}
+                outputPort = null
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] INPUT PORT CLOSED", "")
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] RECEIVER DETACHED", "")
+            }
             if (activeInputMidiDevice != null && activeInputMidiDevice != activeOutputMidiDevice) {
-                activeInputMidiDevice?.close()
+                try { activeInputMidiDevice?.close() } catch (e: Exception) {}
             }
             activeInputMidiDevice = null
             _selectedInputDeviceInfo.value = null
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Input MIDI Device Disconnected", "")
+            if (inputPort == null) {
+                _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
+            }
             return
         }
 
@@ -463,61 +495,62 @@ class KorgMidiService : Service() {
             return
         }
 
-        outputPort?.disconnect(midiReceiver)
-        outputPort?.close()
-        outputPort = null
-
-        if (activeInputMidiDevice != null && activeInputMidiDevice != activeOutputMidiDevice) {
-            activeInputMidiDevice?.close()
-        }
-        activeInputMidiDevice = null
-
-        _selectedInputDeviceInfo.value = deviceInfo
         val name = getDeviceDisplayName(deviceInfo)
-        val devType = if (deviceInfo.type == MidiDeviceInfo.TYPE_BLUETOOTH) "BLUETOOTH" else "USB/OTHER"
-        val devDiag = "[MIDI DEVICE]\nname=$name\nid=${deviceInfo.id}\ntype=$devType\ninputPorts=${deviceInfo.inputPortCount}\noutputPorts=${deviceInfo.outputPortCount}"
-        Log.d("KorgMidiService", devDiag)
-        logTraffic(MidiTrafficLog.Direction.SYSTEM, devDiag, "")
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] INPUT CONNECT", "Opening Input on $name")
 
         if (activeOutputMidiDevice != null && _selectedOutputDeviceInfo.value?.id == deviceInfo.id) {
             activeInputMidiDevice = activeOutputMidiDevice
+            _selectedInputDeviceInfo.value = deviceInfo
             if (deviceInfo.outputPortCount > 0) {
-                outputPort = activeInputMidiDevice?.openOutputPort(0)
-                outputPort?.connect(midiReceiver)
-                val connDiag = "[MIDI CONNECT]\ndevice=$name\nport=0 (Input Receiver Connected)"
-                Log.d("KorgMidiService", connDiag)
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, connDiag, "")
+                try {
+                    outputPort = activeInputMidiDevice?.openOutputPort(0)
+                    outputPort?.connect(midiReceiver)
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] INPUT PORT OPEN", "Port 0")
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] RECEIVER ATTACHED", "")
+                } catch (e: Exception) {
+                    Log.e("KorgMidiService", "Error opening outputPort", e)
+                }
             }
+            checkMidiReady(name)
         } else {
             midiManager.openDevice(deviceInfo, { device ->
                 if (device != null) {
                     activeInputMidiDevice = device
+                    _selectedInputDeviceInfo.value = deviceInfo
                     if (deviceInfo.outputPortCount > 0) {
-                        outputPort = device.openOutputPort(0)
-                        outputPort?.connect(midiReceiver)
-                        val connDiag = "[MIDI CONNECT]\ndevice=$name\nport=0 (Input Receiver Connected)"
-                        Log.d("KorgMidiService", connDiag)
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, connDiag, "")
+                        try {
+                            outputPort = device.openOutputPort(0)
+                            outputPort?.connect(midiReceiver)
+                            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] INPUT PORT OPEN", "Port 0")
+                            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] RECEIVER ATTACHED", "")
+                        } catch (e: Exception) {
+                            Log.e("KorgMidiService", "Error opening outputPort", e)
+                        }
                     }
+                    checkMidiReady(name)
                 } else {
-                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open Input MIDI: $name", "")
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "Failed to open device for Input: $name")
                 }
-            }, Handler(Looper.getMainLooper()))
+            }, mainHandler)
         }
     }
 
     fun connectOutputDevice(deviceInfo: MidiDeviceInfo?) {
         if (deviceInfo == null) {
-            inputPort?.close()
-            inputPort = null
+            if (inputPort != null) {
+                try { inputPort?.close() } catch (e: Exception) {}
+                inputPort = null
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] OUTPUT PORT CLOSED", "")
+            }
             if (activeOutputMidiDevice != null && activeOutputMidiDevice != activeInputMidiDevice) {
-                activeOutputMidiDevice?.close()
+                try { activeOutputMidiDevice?.close() } catch (e: Exception) {}
             }
             activeOutputMidiDevice = null
             _selectedOutputDeviceInfo.value = null
             _selectedDeviceInfo.value = null
-            _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "Output MIDI Device Disconnected", "")
+            if (outputPort == null) {
+                _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
+            }
             return
         }
 
@@ -525,55 +558,67 @@ class KorgMidiService : Service() {
             return
         }
 
-        inputPort?.close()
-        inputPort = null
-
-        if (activeOutputMidiDevice != null && activeOutputMidiDevice != activeInputMidiDevice) {
-            activeOutputMidiDevice?.close()
-        }
-        activeOutputMidiDevice = null
-
-        _selectedOutputDeviceInfo.value = deviceInfo
-        _selectedDeviceInfo.value = deviceInfo
-        _connectionStatus.value = KorgConnectionStatus.CONNECTING
         val name = getDeviceDisplayName(deviceInfo)
-        _statusMessage.value = "Opening $name..."
-        logTraffic(MidiTrafficLog.Direction.SYSTEM, "Connecting Output MIDI: $name", "ID: ${deviceInfo.id}")
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] OUTPUT CONNECT", "Opening Output on $name")
 
         if (activeInputMidiDevice != null && _selectedInputDeviceInfo.value?.id == deviceInfo.id) {
             activeOutputMidiDevice = activeInputMidiDevice
+            _selectedOutputDeviceInfo.value = deviceInfo
+            _selectedDeviceInfo.value = deviceInfo
             if (deviceInfo.inputPortCount > 0) {
-                inputPort = activeOutputMidiDevice?.openInputPort(0)
-                _connectionStatus.value = KorgConnectionStatus.CONNECTED
-                _statusMessage.value = "Connected to $name"
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", name)
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
-                Handler(Looper.getMainLooper()).postDelayed({
-                    requestCurrentSoundInfo(0)
-                    sendEsp32DumpRequest()
-                }, 350)
+                try {
+                    inputPort = activeOutputMidiDevice?.openInputPort(0)
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] OUTPUT PORT OPEN", "Port 0")
+                } catch (e: Exception) {
+                    Log.e("KorgMidiService", "Error opening inputPort", e)
+                }
             }
+            checkMidiReady(name)
         } else {
             midiManager.openDevice(deviceInfo, { device ->
                 if (device != null) {
                     activeOutputMidiDevice = device
+                    _selectedOutputDeviceInfo.value = deviceInfo
+                    _selectedDeviceInfo.value = deviceInfo
                     if (deviceInfo.inputPortCount > 0) {
-                        inputPort = device.openInputPort(0)
-                        _connectionStatus.value = KorgConnectionStatus.CONNECTED
-                        _statusMessage.value = "Connected to $name"
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", name)
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            requestCurrentSoundInfo(0)
-                            sendEsp32DumpRequest()
-                        }, 350)
+                        try {
+                            inputPort = device.openInputPort(0)
+                            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] OUTPUT PORT OPEN", "Port 0")
+                        } catch (e: Exception) {
+                            Log.e("KorgMidiService", "Error opening inputPort", e)
+                        }
                     }
+                    checkMidiReady(name)
                 } else {
                     _connectionStatus.value = KorgConnectionStatus.ERROR
                     _statusMessage.value = "Failed to open $name"
-                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "Failed to open Output MIDI: $name", "")
+                    logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] ERROR", "Failed to open device for Output: $name")
                 }
-            }, Handler(Looper.getMainLooper()))
+            }, mainHandler)
+        }
+    }
+
+    private fun checkMidiReady(deviceName: String) {
+        val isInputConnected = (outputPort != null) || (_selectedInputDeviceInfo.value == null)
+        val isOutputConnected = (inputPort != null) || (_selectedOutputDeviceInfo.value == null)
+
+        if (isInputConnected && isOutputConnected && (inputPort != null || outputPort != null)) {
+            _connectionStatus.value = KorgConnectionStatus.CONNECTED
+            _statusMessage.value = "Connected to $deviceName"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] MIDI READY", "Ports active")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", deviceName)
+
+            if (inputPort != null) {
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
+                pendingInitRunnable?.let { mainHandler.removeCallbacks(it) }
+                pendingInitRunnable = Runnable {
+                    if (_connectionStatus.value == KorgConnectionStatus.CONNECTED && inputPort != null) {
+                        requestCurrentSoundInfo(0)
+                        sendEsp32DumpRequest()
+                    }
+                }
+                mainHandler.postDelayed(pendingInitRunnable!!, 350)
+            }
         }
     }
 
@@ -583,24 +628,61 @@ class KorgMidiService : Service() {
     }
 
     fun disconnectDevice(reason: String = "User requested disconnect") {
-        inputPort?.close()
-        inputPort = null
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DISCONNECT", reason)
 
-        outputPort?.disconnect(midiReceiver)
-        outputPort?.close()
-        outputPort = null
+        pendingInitRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            pendingInitRunnable = null
+        }
 
-        activeInputMidiDevice?.close()
+        if (outputPort != null) {
+            try {
+                outputPort?.disconnect(midiReceiver)
+                outputPort?.close()
+            } catch (e: Exception) {
+                Log.e("KorgMidiService", "Error closing outputPort", e)
+            }
+            outputPort = null
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] INPUT PORT CLOSED", "")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] RECEIVER DETACHED", "")
+        }
+
+        if (inputPort != null) {
+            try {
+                inputPort?.close()
+            } catch (e: Exception) {
+                Log.e("KorgMidiService", "Error closing inputPort", e)
+            }
+            inputPort = null
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] OUTPUT PORT CLOSED", "")
+        }
+
+        val devicesToClose = mutableSetOf<MidiDevice>()
+        activeInputMidiDevice?.let { devicesToClose.add(it) }
+        activeOutputMidiDevice?.let { devicesToClose.add(it) }
+        _openedBleMidiDevices.values.forEach { devicesToClose.add(it) }
+
+        devicesToClose.forEach { dev ->
+            try {
+                dev.close()
+            } catch (e: Exception) {
+                Log.e("KorgMidiService", "Error closing MidiDevice", e)
+            }
+        }
+        _openedBleMidiDevices.clear()
         activeInputMidiDevice = null
-
-        activeOutputMidiDevice?.close()
         activeOutputMidiDevice = null
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] DEVICE CLOSED", "")
 
         _selectedInputDeviceInfo.value = null
         _selectedOutputDeviceInfo.value = null
         _selectedDeviceInfo.value = null
         _connectionStatus.value = KorgConnectionStatus.DISCONNECTED
         _statusMessage.value = reason
+        inSysex = false
+        sysexAccumulator.reset()
+
+        _scannedBleDevices.value = _scannedBleDevices.value.map { it.copy(isConnected = false) }
         logTraffic(MidiTrafficLog.Direction.SYSTEM, "Disconnected", reason)
     }
 

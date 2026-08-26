@@ -1,5 +1,5 @@
 {
-  "name": "Esp32 s3  Izhan Korg",
+  "name": "Izhan Korg",
   "description": "A MIDI controller for Korg synthesizers with transpose and sound selection.",
   "requestFramePermissions": [],
   "majorCapabilities": [
