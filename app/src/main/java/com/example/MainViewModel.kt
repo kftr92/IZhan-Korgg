@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.media.midi.MidiDeviceInfo
 import android.media.midi.MidiManager
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -147,6 +148,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     _selectedPresetIndex.value = rxSlot
                     _activeInputTriggerPadIndex.value = rxSlot
+                    val slotNumber = rxSlot + 1
+                    val uiLog = "[UI] ACTIVE SLOT=$slotNumber"
+                    Log.d("MainViewModel", uiLog)
+                    midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, uiLog, "")
+
                     val targetPreset = _soundPresets.value[rxSlot]
                     midiController.updateCurrentPatch(
                         msb = targetPreset.msb,
@@ -164,7 +170,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             _activeInputTriggerPadIndex.value = null
                         }
                     }
-                    _lastMidiInputInfo.value = "Selected Slot ${rxSlot + 1} from ESP32"
+                    _lastMidiInputInfo.value = "Selected Slot $slotNumber from ESP32"
                 }
             }
         }
@@ -253,7 +259,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val targetPreset = presets[learningPadIdx]
                 val updated = targetPreset.copy(triggerNote = learnedNote)
                 updatePreset(learningPadIdx, updated)
-                _lastMidiInputInfo.value = "Learned Note $learnedNote for Pad ${learningPadIdx + 1}"
+                val slotNumber = learningPadIdx + 1
+                Log.d("MainViewModel", "[MIDI LEARN] NOTE=$learnedNote")
+                Log.d("MainViewModel", "[MIDI LEARN] SLOT=$slotNumber")
+                midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, "[MIDI LEARN] NOTE=$learnedNote\n[MIDI LEARN] SLOT=$slotNumber", "")
+                _lastMidiInputInfo.value = "Learned Note $learnedNote for Slot $slotNumber"
                 _midiLearningPadIndex.value = null
                 return
             } else if (event.type == MidiEventType.CONTROL_CHANGE && event.velocityOrVal > 0) {
@@ -261,7 +271,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val targetPreset = presets[learningPadIdx]
                 val updated = targetPreset.copy(triggerNote = learnedCc)
                 updatePreset(learningPadIdx, updated)
-                _lastMidiInputInfo.value = "Learned CC $learnedCc for Pad ${learningPadIdx + 1}"
+                val slotNumber = learningPadIdx + 1
+                Log.d("MainViewModel", "[MIDI LEARN] CC=$learnedCc")
+                Log.d("MainViewModel", "[MIDI LEARN] SLOT=$slotNumber")
+                midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, "[MIDI LEARN] CC=$learnedCc\n[MIDI LEARN] SLOT=$slotNumber", "")
+                _lastMidiInputInfo.value = "Learned CC $learnedCc for Slot $slotNumber"
                 _midiLearningPadIndex.value = null
                 return
             }
@@ -299,6 +313,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (matchedIndex != -1) {
                     _activeInputTriggerPadIndex.value = matchedIndex
                     _selectedPresetIndex.value = matchedIndex
+                    val slotNumber = matchedIndex + 1
+                    val uiLog = "[UI] ACTIVE SLOT=$slotNumber"
+                    Log.d("MainViewModel", uiLog)
+                    midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, uiLog, "")
+
                     val targetPreset = presets[matchedIndex]
                     midiController.updateCurrentPatch(
                         msb = targetPreset.msb,
