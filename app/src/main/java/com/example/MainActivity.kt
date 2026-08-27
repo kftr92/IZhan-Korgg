@@ -1364,15 +1364,6 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         }
                         HorizontalDivider(color = Color(0xFF13264A))
                         DropdownMenuItem(
-                            text = { Text("Pull from ESP32 (Dump)", color = Color(0xFFFF9E00), fontSize = 12.sp) },
-                            onClick = {
-                                showConfigMenu = false
-                                viewModel.requestEsp32Dump()
-                                Toast.makeText(context, "Requested Slot Dump from ESP32...", Toast.LENGTH_SHORT).show()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = Color(0xFFFF9E00), modifier = Modifier.size(16.dp)) }
-                        )
-                        DropdownMenuItem(
                             text = { Text("Push All Slots to ESP32", color = Color(0xFFFF6D00), fontSize = 12.sp) },
                             onClick = {
                                 showConfigMenu = false

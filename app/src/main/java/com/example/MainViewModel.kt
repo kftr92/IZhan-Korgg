@@ -544,12 +544,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun requestEsp32Dump() {
-        _isSyncingFromEsp32.value = true
-        midiController.sendEsp32DumpRequest()
-        scheduleDumpCompletionDebounce()
-    }
-
     fun sendEsp32SlotName(slotIndex: Int, name: String) {
         midiController.sendEsp32SlotName(slotIndex, name)
     }

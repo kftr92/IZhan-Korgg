@@ -441,18 +441,17 @@ class KorgMidiService : Service() {
                         _statusMessage.value = "Connected to $devName"
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] MIDI READY", "Input & Output ports active and verified")
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", devName)
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active")
 
                         _scannedBleDevices.value = _scannedBleDevices.value.map {
                             if (it.address == bluetoothDevice.address) it.copy(isConnected = true) else it
                         }
 
-                        // Schedule deferred dump & patch request only after full readiness
+                        // Schedule deferred patch request only after full readiness
                         pendingInitRunnable?.let { mainHandler.removeCallbacks(it) }
                         pendingInitRunnable = Runnable {
                             if (_connectionStatus.value == KorgConnectionStatus.CONNECTED && inputPort != null) {
                                 requestCurrentSoundInfo(0)
-                                sendEsp32DumpRequest()
                             }
                         }
                         mainHandler.postDelayed(pendingInitRunnable!!, 350)
@@ -619,12 +618,11 @@ class KorgMidiService : Service() {
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", deviceName)
 
             if (inputPort != null) {
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active, requesting full dump...")
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active")
                 pendingInitRunnable?.let { mainHandler.removeCallbacks(it) }
                 pendingInitRunnable = Runnable {
                     if (_connectionStatus.value == KorgConnectionStatus.CONNECTED && inputPort != null) {
                         requestCurrentSoundInfo(0)
-                        sendEsp32DumpRequest()
                     }
                 }
                 mainHandler.postDelayed(pendingInitRunnable!!, 350)
@@ -919,26 +917,6 @@ class KorgMidiService : Service() {
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error sending ESP32 Slot Name SysEx", e)
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Slot Name", e.localizedMessage ?: "Unknown error")
-        }
-    }
-
-    fun sendEsp32DumpRequest() {
-        val port = inputPort ?: run {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Dump Request Skipped: Port Closed", "")
-            return
-        }
-        try {
-            val sysex = byteArrayOf(
-                SYSEX_START,
-                SYSEX_MANUFACTURER_ID,
-                CMD_ESP32_REQ_DUMP,
-                SYSEX_END
-            )
-            port.send(sysex, 0, sysex.size)
-            logTraffic(MidiTrafficLog.Direction.OUT, "[ESP32 PULL] REQUEST DUMP", bytesToHex(sysex))
-        } catch (e: Exception) {
-            Log.e("KorgMidiService", "Error sending ESP32 Dump Request", e)
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Dump Request", e.localizedMessage ?: "Unknown error")
         }
     }
 
