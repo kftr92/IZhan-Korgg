@@ -62,6 +62,11 @@ data class Esp32SlotDump(
     val buttonType: String = if (outNote < 127) "NOTE" else "PGM"
 )
 
+data class Esp32SlotNameRx(
+    val slotIndex: Int,
+    val name: String
+)
+
 class KorgMidiService : Service() {
 
     companion object {
@@ -79,6 +84,7 @@ class KorgMidiService : Service() {
         const val CMD_ESP32_TRANSPOSE: Byte = 0x04.toByte()
         const val CMD_ESP32_SELECT_SLOT: Byte = 0x05.toByte()
         const val CMD_ESP32_SAVE_SLOT_NAME: Byte = 0x06.toByte()
+        const val CMD_ESP32_RX_SLOT_NAME: Byte = 0x07.toByte()
     }
 
     private val binder = KorgMidiBinder()
@@ -126,6 +132,9 @@ class KorgMidiService : Service() {
 
     private val _esp32IncomingSelectSlot = MutableStateFlow<Int?>(null)
     val esp32IncomingSelectSlot: StateFlow<Int?> = _esp32IncomingSelectSlot.asStateFlow()
+
+    private val _esp32SlotNameRx = MutableStateFlow<Esp32SlotNameRx?>(null)
+    val esp32SlotNameRx: StateFlow<Esp32SlotNameRx?> = _esp32SlotNameRx.asStateFlow()
 
     // Diagnostic State (RAW MIDI, last parsed summary, last Sysex, etc.)
     private val _lastRawMidiHex = MutableStateFlow<String>("")
@@ -1340,6 +1349,34 @@ class KorgMidiService : Service() {
                         _esp32IncomingSelectSlot.value = slot
                     } else {
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Select Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                    }
+                }
+                0x07 -> { // RX_SLOT_NAME (0x07)
+                    if (sysexBytes.size >= 5) {
+                        val slotIndex = sysexBytes[3].toInt() and 0x7F
+                        val nameLength = (sysexBytes[4].toInt() and 0x7F)
+                        val maxPayloadBytes = if (sysexBytes.last() == 0xF7.toByte()) sysexBytes.size - 6 else sysexBytes.size - 5
+                        val actualLen = minOf(nameLength, maxOf(0, maxPayloadBytes), 24)
+                        val rawNameBytes = if (actualLen > 0) {
+                            sysexBytes.copyOfRange(5, 5 + actualLen)
+                        } else {
+                            ByteArray(0)
+                        }
+                        val decodedName = if (rawNameBytes.isNotEmpty()) String(rawNameBytes, Charsets.UTF_8).trim() else ""
+                        val slotNumber = slotIndex + 1
+                        val hexDump = bytesToHex(sysexBytes)
+                        val summary = "[ESP32 RX NAME]\nSLOT=$slotNumber\nNAME=\"$decodedName\""
+                        _lastEsp32CommandSummary.value = "CMD 07 (Slot $slotNumber Name: \"$decodedName\")"
+                        logTraffic(
+                            MidiTrafficLog.Direction.IN,
+                            summary,
+                            "[ESP32 RX NAME HEX]\n$hexDump"
+                        )
+                        Log.d("KorgMidiService", "[ESP32 RX NAME] SLOT=$slotNumber NAME=\"$decodedName\"")
+                        _esp32SlotNameRx.value = null
+                        _esp32SlotNameRx.value = Esp32SlotNameRx(slotIndex, decodedName)
+                    } else {
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Slot Name Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
                     }
                 }
                 else -> {

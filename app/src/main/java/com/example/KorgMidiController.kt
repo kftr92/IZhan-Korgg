@@ -62,6 +62,9 @@ class KorgMidiController(
     private val _esp32IncomingSelectSlot = MutableStateFlow<Int?>(null)
     val esp32IncomingSelectSlot: StateFlow<Int?> = _esp32IncomingSelectSlot.asStateFlow()
 
+    private val _esp32SlotNameRx = MutableStateFlow<Esp32SlotNameRx?>(null)
+    val esp32SlotNameRx: StateFlow<Esp32SlotNameRx?> = _esp32SlotNameRx.asStateFlow()
+
     private val _lastRawMidiHex = MutableStateFlow<String>("")
     val lastRawMidiHex: StateFlow<String> = _lastRawMidiHex.asStateFlow()
 
@@ -123,6 +126,9 @@ class KorgMidiController(
                 }
                 scope.launch {
                     midiService?.esp32IncomingSelectSlot?.collect { _esp32IncomingSelectSlot.value = it }
+                }
+                scope.launch {
+                    midiService?.esp32SlotNameRx?.collect { _esp32SlotNameRx.value = it }
                 }
                 scope.launch {
                     midiService?.lastRawMidiHex?.collect { _lastRawMidiHex.value = it }

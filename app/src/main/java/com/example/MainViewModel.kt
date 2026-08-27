@@ -124,6 +124,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
+            midiController.esp32SlotNameRx.collect { nameRx ->
+                if (nameRx != null) {
+                    handleEsp32SlotName(nameRx)
+                }
+            }
+        }
+
+        viewModelScope.launch {
             midiController.esp32IncomingTranspose.collect { rxTranspose ->
                 if (rxTranspose != null) {
                     _transpose.value = rxTranspose
@@ -219,6 +227,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentList[slotIdx] = updatedPreset
         _soundPresets.value = currentList
         _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from ESP32: $nameToUse"
+
+        // Debounce dump completion to batch session
+        scheduleDumpCompletionDebounce()
+    }
+
+    private fun handleEsp32SlotName(nameRx: Esp32SlotNameRx) {
+        val slotIdx = nameRx.slotIndex
+        if (slotIdx !in 0..127) return
+        _isSyncingFromEsp32.value = true
+
+        val currentList = _soundPresets.value.toMutableList()
+        while (currentList.size <= slotIdx) {
+            currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
+        }
+
+        val currentPreset = currentList[slotIdx]
+        val updatedPreset = currentPreset.copy(
+            name = nameRx.name
+        )
+        currentList[slotIdx] = updatedPreset
+        _soundPresets.value = currentList
+        val slotNumber = slotIdx + 1
+        _lastMidiInputInfo.value = "Synced Slot $slotNumber Name: \"${nameRx.name}\""
 
         // Debounce dump completion to batch session
         scheduleDumpCompletionDebounce()
