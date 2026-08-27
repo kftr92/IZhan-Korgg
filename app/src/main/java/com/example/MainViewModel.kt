@@ -467,6 +467,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             saveConfiguration(_currentConfigName.value)
             if (syncToEsp32) {
                 sendEsp32SlotConfig(index, preset)
+                sendEsp32SlotName(index, preset.name)
             }
         }
     }
@@ -518,6 +519,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         scheduleDumpCompletionDebounce()
     }
 
+    fun sendEsp32SlotName(slotIndex: Int, name: String) {
+        midiController.sendEsp32SlotName(slotIndex, name)
+    }
+
     fun syncAllSlotsToEsp32() {
         val presets = _soundPresets.value
         midiController.logTraffic(
@@ -525,13 +530,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "[ESP32 PUSH ALL] count=${presets.size}",
             ""
         )
-        presets.forEachIndexed { idx, preset ->
-            midiController.logTraffic(
-                MidiTrafficLog.Direction.SYSTEM,
-                "[ESP32 PUSH] slot=${idx + 1} index=$idx type=${preset.buttonType}",
-                ""
-            )
-            sendEsp32SlotConfig(idx, preset)
+        viewModelScope.launch {
+            presets.forEachIndexed { idx, preset ->
+                midiController.logTraffic(
+                    MidiTrafficLog.Direction.SYSTEM,
+                    "[ESP32 PUSH] slot=${idx + 1} index=$idx type=${preset.buttonType}",
+                    ""
+                )
+                sendEsp32SlotConfig(idx, preset)
+                kotlinx.coroutines.delay(20)
+                sendEsp32SlotName(idx, preset.name)
+                kotlinx.coroutines.delay(20)
+            }
         }
     }
 

@@ -78,6 +78,7 @@ class KorgMidiService : Service() {
         const val CMD_ESP32_REQ_DUMP: Byte = 0x03.toByte()
         const val CMD_ESP32_TRANSPOSE: Byte = 0x04.toByte()
         const val CMD_ESP32_SELECT_SLOT: Byte = 0x05.toByte()
+        const val CMD_ESP32_SAVE_SLOT_NAME: Byte = 0x06.toByte()
     }
 
     private val binder = KorgMidiBinder()
@@ -873,6 +874,42 @@ class KorgMidiService : Service() {
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error sending ESP32 Save Slot SysEx", e)
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Save Slot", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendEsp32SlotName(slotIndex: Int, name: String?) {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Slot Name Skipped: Port Closed", "Slot $slotIndex")
+            return
+        }
+        try {
+            val sIdx = slotIndex.coerceIn(0, 127).toByte()
+            val safeName = name ?: ""
+            val rawBytes = safeName.toByteArray(Charsets.UTF_8)
+            val nameBytes = if (rawBytes.size > 24) rawBytes.copyOfRange(0, 24) else rawBytes
+            val nameLen = nameBytes.size.toByte()
+
+            val sysex = ByteArray(5 + nameBytes.size + 1)
+            sysex[0] = SYSEX_START
+            sysex[1] = SYSEX_MANUFACTURER_ID
+            sysex[2] = CMD_ESP32_SAVE_SLOT_NAME
+            sysex[3] = sIdx
+            sysex[4] = nameLen
+            if (nameBytes.isNotEmpty()) {
+                System.arraycopy(nameBytes, 0, sysex, 5, nameBytes.size)
+            }
+            sysex[sysex.size - 1] = SYSEX_END
+
+            port.send(sysex, 0, sysex.size)
+            val hexDump = bytesToHex(sysex)
+            logTraffic(
+                MidiTrafficLog.Direction.OUT,
+                "[NAME SYNC] SLOT=${slotIndex + 1} NAME=\"$safeName\"",
+                "[NAME SYNC HEX] $hexDump"
+            )
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending ESP32 Slot Name SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Slot Name", e.localizedMessage ?: "Unknown error")
         }
     }
 
