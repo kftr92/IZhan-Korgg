@@ -137,7 +137,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _transpose.value = rxTranspose
                     midiController.sendMasterCoarseTune(_channel.value, rxTranspose)
                     val signStr = if (rxTranspose > 0) "+$rxTranspose" else "$rxTranspose"
-                    _lastMidiInputInfo.value = "ESP32 Transpose: $signStr"
+                    _lastMidiInputInfo.value = "zhanhostmidi Transpose: $signStr"
                 }
             }
         }
@@ -170,7 +170,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         customName = targetPreset.name
                     )
                     // NOTE: Do NOT call triggerSlotToKorg(rxSlot) here.
-                    // ESP32 has already executed the MIDI action on Korg Krome.
+                    // zhanhostmidi has already executed the MIDI action on Korg Krome.
                     // CMD 05 is strictly UI feedback / slot selection.
                     viewModelScope.launch {
                         kotlinx.coroutines.delay(350)
@@ -178,7 +178,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             _activeInputTriggerPadIndex.value = null
                         }
                     }
-                    _lastMidiInputInfo.value = "Selected Slot $slotNumber from ESP32"
+                    _lastMidiInputInfo.value = "Selected Slot $slotNumber from zhanhostmidi"
                 }
             }
         }
@@ -226,7 +226,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         currentList[slotIdx] = updatedPreset
         _soundPresets.value = currentList
-        _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from ESP32: $nameToUse"
+        _lastMidiInputInfo.value = "Synced Slot ${slotIdx + 1} from zhanhostmidi: $nameToUse"
 
         // Debounce dump completion to batch session
         scheduleDumpCompletionDebounce()
@@ -263,10 +263,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             saveConfiguration(_currentConfigName.value)
             midiController.logTraffic(
                 MidiTrafficLog.Direction.SYSTEM,
-                "[ESP32 PULL] COMPLETE count=${_soundPresets.value.size}",
+                "[zhanhostmidi PULL] COMPLETE count=${_soundPresets.value.size}",
                 ""
             )
-            _lastMidiInputInfo.value = "ESP32 Dump Complete (${_soundPresets.value.size} slots)"
+            _lastMidiInputInfo.value = "zhanhostmidi Dump Complete (${_soundPresets.value.size} slots)"
         }
     }
 
@@ -486,7 +486,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _transpose.value = newTranspose
         // Tetap kirim ke KORG
         midiController.sendMasterCoarseTune(_channel.value, newTranspose)
-        // Kirim state transpose ke ESP32
+        // Kirim state transpose ke zhanhostmidi
         midiController.sendEsp32Transpose(newTranspose)
     }
 
@@ -511,7 +511,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val progNum = preset.program.coerceIn(0, 127)
         val outChannel = (if (preset.midiChannel in 0..15) preset.midiChannel else _channel.value).coerceIn(0, 15)
         
-        // Strict Mode rules for ESP32 bridge:
+        // Strict Mode rules for zhanhostmidi bridge:
         // When NOTE mode: send outNote (0..126).
         // When PGM mode: send 127 to indicate Program Change only (no note output).
         val isNoteMode = preset.buttonType.equals("NOTE", ignoreCase = true) || (preset.buttonType.isBlank() && preset.outputNote in 0..126)
@@ -552,14 +552,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val presets = _soundPresets.value
         midiController.logTraffic(
             MidiTrafficLog.Direction.SYSTEM,
-            "[ESP32 PUSH ALL] count=${presets.size}",
+            "[zhanhostmidi PUSH ALL] count=${presets.size}",
             ""
         )
         viewModelScope.launch {
             presets.forEachIndexed { idx, preset ->
                 midiController.logTraffic(
                     MidiTrafficLog.Direction.SYSTEM,
-                    "[ESP32 PUSH] slot=${idx + 1} index=$idx type=${preset.buttonType}",
+                    "[zhanhostmidi PUSH] slot=${idx + 1} index=$idx type=${preset.buttonType}",
                     ""
                 )
                 sendEsp32SlotConfig(idx, preset)
@@ -573,7 +573,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val activePadNotes = java.util.concurrent.ConcurrentHashMap<Int, Pair<Int, Int>>()
 
     fun onPadPress(index: Int) {
-        // Send SELECT SLOT (F0 7D 05 SLOT F7) to ESP32
+        // Send SELECT SLOT (F0 7D 05 SLOT F7) to zhanhostmidi
         midiController.sendEsp32SelectSlot(index)
         triggerSlotToKorg(index)
     }

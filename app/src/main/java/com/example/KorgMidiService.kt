@@ -74,7 +74,7 @@ class KorgMidiService : Service() {
         val ESP32_BLE_MIDI_SERVICE_UUID: UUID = UUID.fromString("03b80e5a-ede8-4b33-a751-6ce34ec4c700")
         val ESP32_BLE_MIDI_CHAR_UUID: UUID = UUID.fromString("7772e5db-3868-4112-a1a9-f2669d106bf3")
 
-        // Custom SysEx Protocol Constants for ESP32-S3
+        // Custom SysEx Protocol Constants for zhanhostmidi
         const val SYSEX_START: Byte = 0xF0.toByte()
         const val SYSEX_END: Byte = 0xF7.toByte()
         const val SYSEX_MANUFACTURER_ID: Byte = 0x7D.toByte() // Educational / Custom MIDI Manufacturer ID
@@ -441,7 +441,7 @@ class KorgMidiService : Service() {
                         _statusMessage.value = "Connected to $devName"
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "[BLE LIFECYCLE] MIDI READY", "Input & Output ports active and verified")
                         logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", devName)
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active")
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi READY", "Ports active")
 
                         _scannedBleDevices.value = _scannedBleDevices.value.map {
                             if (it.address == bluetoothDevice.address) it.copy(isConnected = true) else it
@@ -618,7 +618,7 @@ class KorgMidiService : Service() {
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "BLE CONNECTED", deviceName)
 
             if (inputPort != null) {
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 READY", "Ports active")
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi READY", "Ports active")
                 pendingInitRunnable?.let { mainHandler.removeCallbacks(it) }
                 pendingInitRunnable = Runnable {
                     if (_connectionStatus.value == KorgConnectionStatus.CONNECTED && inputPort != null) {
@@ -834,7 +834,7 @@ class KorgMidiService : Service() {
         buttonTypeCode: Int = 0
     ) {
         val port = inputPort ?: run {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Save Skipped: Port Closed", "Slot $slotIndex")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Save Skipped: Port Closed", "Slot $slotIndex")
             return
         }
         try {
@@ -875,18 +875,18 @@ class KorgMidiService : Service() {
             }
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "[ESP32 TX SLOT] index=$slotIndex slot=${slotIndex + 1} type=$btnStr trig=$triggerNote outNote=$outNote vel=$outputVelocity",
+                "[zhanhostmidi TX SLOT] index=$slotIndex slot=${slotIndex + 1} type=$btnStr trig=$triggerNote outNote=$outNote vel=$outputVelocity",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
-            Log.e("KorgMidiService", "Error sending ESP32 Save Slot SysEx", e)
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Save Slot", e.localizedMessage ?: "Unknown error")
+            Log.e("KorgMidiService", "Error sending zhanhostmidi Save Slot SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Save Slot", e.localizedMessage ?: "Unknown error")
         }
     }
 
     fun sendEsp32SlotName(slotIndex: Int, name: String?) {
         val port = inputPort ?: run {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Slot Name Skipped: Port Closed", "Slot $slotIndex")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot Name Skipped: Port Closed", "Slot $slotIndex")
             return
         }
         try {
@@ -915,14 +915,14 @@ class KorgMidiService : Service() {
                 "[NAME SYNC HEX] $hexDump"
             )
         } catch (e: Exception) {
-            Log.e("KorgMidiService", "Error sending ESP32 Slot Name SysEx", e)
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Slot Name", e.localizedMessage ?: "Unknown error")
+            Log.e("KorgMidiService", "Error sending zhanhostmidi Slot Name SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Slot Name", e.localizedMessage ?: "Unknown error")
         }
     }
 
     fun sendEsp32Transpose(transpose: Int) {
         val port = inputPort ?: run {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Transpose Skipped: Port Closed", "Val: $transpose")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Transpose Skipped: Port Closed", "Val: $transpose")
             return
         }
         try {
@@ -939,18 +939,18 @@ class KorgMidiService : Service() {
             val signStr = if (clamped > 0) "+$clamped" else "$clamped"
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "TX ESP32 TRANSPOSE: $signStr",
+                "TX zhanhostmidi TRANSPOSE: $signStr",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
-            Log.e("KorgMidiService", "Error sending ESP32 Transpose SysEx", e)
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Transpose", e.localizedMessage ?: "Unknown error")
+            Log.e("KorgMidiService", "Error sending zhanhostmidi Transpose SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Transpose", e.localizedMessage ?: "Unknown error")
         }
     }
 
     fun sendEsp32SelectSlot(slotIndex: Int) {
         val port = inputPort ?: run {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "ESP32 Select Slot Skipped: Port Closed", "Slot $slotIndex")
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Select Slot Skipped: Port Closed", "Slot $slotIndex")
             return
         }
         try {
@@ -965,12 +965,12 @@ class KorgMidiService : Service() {
             port.send(sysex, 0, sysex.size)
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
-                "[ESP32 TX SELECT] index=$slotIndex slot=${slotIndex + 1}",
+                "[zhanhostmidi TX SELECT] index=$slotIndex slot=${slotIndex + 1}",
                 bytesToHex(sysex)
             )
         } catch (e: Exception) {
-            Log.e("KorgMidiService", "Error sending ESP32 Select Slot SysEx", e)
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: ESP32 Select Slot", e.localizedMessage ?: "Unknown error")
+            Log.e("KorgMidiService", "Error sending zhanhostmidi Select Slot SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Select Slot", e.localizedMessage ?: "Unknown error")
         }
     }
 
@@ -1052,7 +1052,7 @@ class KorgMidiService : Service() {
                     // Valid 7-bit SysEx payload byte
                     sysexAccumulator.write(b)
 
-                    // Special check for ESP32 custom command: F0 7D 05 <slotIndex>
+                    // Special check for zhanhostmidi custom command: F0 7D 05 <slotIndex>
                     // Custom CMD 05 has a fixed 4-byte format and completes without requiring trailing 0xF7
                     if (sysexAccumulator.size() == 4) {
                         val currentBuf = sysexAccumulator.toByteArray()
@@ -1240,7 +1240,7 @@ class KorgMidiService : Service() {
 
     private fun processReceivedSysex(sysexBytes: ByteArray) {
         if (sysexBytes.size < 4) {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nMalformed SysEx (size < 4)", bytesToHex(sysexBytes))
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "[zhanhostmidi BLE RX ERROR]\nMalformed SysEx (size < 4)", bytesToHex(sysexBytes))
             return
         }
 
@@ -1250,7 +1250,7 @@ class KorgMidiService : Service() {
         val b0 = sysexBytes[0].toInt() and 0xFF
         val b1 = sysexBytes[1].toInt() and 0xFF
 
-        // Check for ESP32 Custom SysEx Protocol (Manufacturer ID 0x7D)
+        // Check for zhanhostmidi Custom SysEx Protocol (Manufacturer ID 0x7D)
         if (b0 == 0xF0 && b1 == 0x7D) {
             val cmd = if (sysexBytes.size > 2) sysexBytes[2].toInt() and 0xFF else 0
             when (cmd) {
@@ -1291,12 +1291,12 @@ class KorgMidiService : Service() {
                         )
                         _esp32SlotDump.value = dump
                         val slotNumber = slotIndex + 1
-                        val summary = "[ESP32 RX] CMD=0x${cmd.toString(16).uppercase()} DUMP index=$slotIndex slot=$slotNumber\nTrigger=$triggerNote\nType=$buttonTypeStr\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote\nVelocity=$velocity"
+                        val summary = "[zhanhostmidi RX] CMD=0x${cmd.toString(16).uppercase()} DUMP index=$slotIndex slot=$slotNumber\nTrigger=$triggerNote\nType=$buttonTypeStr\nCombi=${if (isCombi) 1 else 0}\nBankMSB=$bankMSB\nBankLSB=$bankLSB\nProgram=$progNum\nChannel=${outChannel + 1}\nOutNote=$outNote\nVelocity=$velocity"
                         _lastEsp32CommandSummary.value = "CMD 02 (Dump Slot $slotNumber)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
                     } else {
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[zhanhostmidi BLE RX ERROR]\nInvalid Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
                     }
                 }
                 0x04 -> { // TRANSPOSE (0x04)
@@ -1305,20 +1305,20 @@ class KorgMidiService : Service() {
                         val rxTranspose = (encoded - 12).coerceIn(-12, 12)
                         _esp32IncomingTranspose.value = rxTranspose
                         val signStr = if (rxTranspose > 0) "+$rxTranspose" else "$rxTranspose"
-                        val summary = "[ESP32 RX] CMD=04 TRANSPOSE $signStr"
+                        val summary = "[zhanhostmidi RX] CMD=04 TRANSPOSE $signStr"
                         _lastEsp32CommandSummary.value = "CMD 04 (Transpose $signStr)"
                         logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                         Log.d("KorgMidiService", summary)
                     } else {
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Transpose Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[zhanhostmidi BLE RX ERROR]\nInvalid Transpose Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
                     }
                 }
                 0x05 -> { // SELECT_SLOT (0x05)
                     if (sysexBytes.size >= 4) {
                         val slot = sysexBytes[3].toInt() and 0x7F
                         val slotNumber = slot + 1
-                        val summary = "[ESP32 RX] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
-                        val diagCmd = "[ESP32 CMD RECEIVED] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
+                        val summary = "[zhanhostmidi RX] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
+                        val diagCmd = "[zhanhostmidi CMD RECEIVED] CMD=05 SLOT_INDEX=$slot SLOT=$slotNumber"
                         _lastEsp32CommandSummary.value = "CMD 05 (Select Slot $slotNumber, Index $slot)"
                         Log.d("KorgMidiService", diagCmd)
                         logTraffic(MidiTrafficLog.Direction.IN, "$summary\n$diagCmd", bytesToHex(sysexBytes))
@@ -1326,7 +1326,7 @@ class KorgMidiService : Service() {
                         _esp32IncomingSelectSlot.value = null
                         _esp32IncomingSelectSlot.value = slot
                     } else {
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Select Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[zhanhostmidi BLE RX ERROR]\nInvalid Select Slot Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
                     }
                 }
                 0x07 -> { // RX_SLOT_NAME (0x07)
@@ -1343,22 +1343,22 @@ class KorgMidiService : Service() {
                         val decodedName = if (rawNameBytes.isNotEmpty()) String(rawNameBytes, Charsets.UTF_8).trim() else ""
                         val slotNumber = slotIndex + 1
                         val hexDump = bytesToHex(sysexBytes)
-                        val summary = "[ESP32 RX NAME]\nSLOT=$slotNumber\nNAME=\"$decodedName\""
+                        val summary = "[zhanhostmidi RX NAME]\nSLOT=$slotNumber\nNAME=\"$decodedName\""
                         _lastEsp32CommandSummary.value = "CMD 07 (Slot $slotNumber Name: \"$decodedName\")"
                         logTraffic(
                             MidiTrafficLog.Direction.IN,
                             summary,
-                            "[ESP32 RX NAME HEX]\n$hexDump"
+                            "[zhanhostmidi RX NAME HEX]\n$hexDump"
                         )
-                        Log.d("KorgMidiService", "[ESP32 RX NAME] SLOT=$slotNumber NAME=\"$decodedName\"")
+                        Log.d("KorgMidiService", "[zhanhostmidi RX NAME] SLOT=$slotNumber NAME=\"$decodedName\"")
                         _esp32SlotNameRx.value = null
                         _esp32SlotNameRx.value = Esp32SlotNameRx(slotIndex, decodedName)
                     } else {
-                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[ESP32 BLE RX ERROR]\nInvalid Slot Name Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
+                        logTraffic(MidiTrafficLog.Direction.SYSTEM, "[zhanhostmidi BLE RX ERROR]\nInvalid Slot Name Packet size: ${sysexBytes.size} bytes", bytesToHex(sysexBytes))
                     }
                 }
                 else -> {
-                    val summary = "[ESP32 RX] CMD=0x${cmd.toString(16).uppercase()}"
+                    val summary = "[zhanhostmidi RX] CMD=0x${cmd.toString(16).uppercase()}"
                     _lastEsp32CommandSummary.value = "CMD 0x${cmd.toString(16).uppercase()}"
                     logTraffic(MidiTrafficLog.Direction.IN, summary, bytesToHex(sysexBytes))
                     Log.d("KorgMidiService", summary)

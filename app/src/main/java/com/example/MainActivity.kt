@@ -1364,11 +1364,11 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         }
                         HorizontalDivider(color = Color(0xFF13264A))
                         DropdownMenuItem(
-                            text = { Text("Push All Slots to ESP32", color = Color(0xFFFF6D00), fontSize = 12.sp) },
+                            text = { Text("Push All Slots to zhanhostmidi", color = Color(0xFFFF6D00), fontSize = 12.sp) },
                             onClick = {
                                 showConfigMenu = false
                                 viewModel.syncAllSlotsToEsp32()
-                                Toast.makeText(context, "Sent All Slots to ESP32 Flash!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Sent All Slots to zhanhostmidi Flash!", Toast.LENGTH_SHORT).show()
                             },
                             leadingIcon = { Icon(Icons.Default.FileUpload, contentDescription = null, tint = Color(0xFFFF6D00), modifier = Modifier.size(16.dp)) }
                         )
@@ -2949,7 +2949,7 @@ fun MidiBleDiagnosticDialog(
         sb.appendLine("MIDI Output Device: $outputDevName")
         sb.appendLine("Last RAW MIDI     : ${if (lastRawMidiHex.isNotBlank()) lastRawMidiHex else "(None)"}")
         sb.appendLine("Last Parsed MIDI  : ${if (lastParsedMidiSummary.isNotBlank()) lastParsedMidiSummary else "(None)"}")
-        sb.appendLine("Last ESP32 Command: ${if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(None)"}")
+        sb.appendLine("Last zhanhostmidi Command: ${if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(None)"}")
         sb.appendLine("Active UI Slot    : Slot ${activeSlotIndex + 1} ($activePresetName)")
         sb.appendLine("MIDI Learn State  : ${if (midiLearningPadIndex != null) "Slot ${midiLearningPadIndex + 1} [ACTIVE]" else "IDLE"}")
         sb.appendLine("==========================================")
@@ -3069,7 +3069,7 @@ fun MidiBleDiagnosticDialog(
                                 )
                             }
 
-                            // Line 3: Parsed MIDI Event & ESP32 Command
+                            // Line 3: Parsed MIDI Event & zhanhostmidi Command
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3086,7 +3086,7 @@ fun MidiBleDiagnosticDialog(
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    "ESP32 CMD: " + if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(None)",
+                                    "zhanhostmidi CMD: " + if (lastEsp32CommandSummary.isNotBlank()) lastEsp32CommandSummary else if (lastSysexHex.isNotBlank()) lastSysexHex else "(None)",
                                     color = if (lastEsp32CommandSummary.isNotBlank()) Color(0xFFFFD54F) else Color.DarkGray,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.SemiBold,
@@ -3144,7 +3144,7 @@ fun MidiBleDiagnosticDialog(
                 ) {
                     if (trafficLogs.isEmpty()) {
                         Text(
-                            "Waiting for incoming BLE-MIDI or ESP32 commands...\nPress nanoPAD or buttons on controller.",
+                            "Waiting for incoming BLE-MIDI or zhanhostmidi commands...\nPress nanoPAD or buttons on controller.",
                             color = Color.DarkGray,
                             fontSize = 11.sp,
                             textAlign = TextAlign.Center,

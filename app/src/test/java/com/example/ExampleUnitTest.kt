@@ -136,9 +136,9 @@ class ExampleUnitTest {
         val decoded = decodeBleMidi(raw)
         assertEquals(1, decoded.size)
         val sysex = decoded[0] as ByteArray
-        assertEquals(5, sysex.size)
+        assertEquals(4, sysex.size)
         assertEquals(0xF0.toByte(), sysex[0])
-        assertEquals(0x7D.toByte(), sysex[1]) // ESP32 manufacturer
+        assertEquals(0x7D.toByte(), sysex[1]) // zhanhostmidi manufacturer
         assertEquals(0x05.toByte(), sysex[2]) // CMD 05
         val slotIndex = sysex[3].toInt() and 0x7F
         assertEquals(0, slotIndex) // Slot Index 0 = Slot 1
@@ -151,9 +151,9 @@ class ExampleUnitTest {
         val decoded = decodeBleMidi(raw)
         assertEquals(1, decoded.size)
         val sysex = decoded[0] as ByteArray
-        assertEquals(5, sysex.size)
+        assertEquals(4, sysex.size)
         assertEquals(0xF0.toByte(), sysex[0])
-        assertEquals(0x7D.toByte(), sysex[1]) // ESP32
+        assertEquals(0x7D.toByte(), sysex[1]) // zhanhostmidi
         assertEquals(0x05.toByte(), sysex[2]) // CMD 05
         val slotIndex = sysex[3].toInt() and 0x7F
         assertEquals(12, slotIndex) // Slot Index 12 = Slot 13
@@ -195,9 +195,9 @@ class ExampleUnitTest {
         val decoded = decodeBleMidi(raw)
         assertEquals(1, decoded.size)
         val sysex = decoded[0] as ByteArray
-        val isEsp32 = (sysex[0] == 0xF0.toByte() && sysex[1] == 0x7D.toByte())
+        val isZhanhostmidi = (sysex[0] == 0xF0.toByte() && sysex[1] == 0x7D.toByte())
         val isKorg = (sysex[0] == 0xF0.toByte() && sysex[1] == 0x42.toByte())
-        assertFalse(isEsp32)
+        assertFalse(isZhanhostmidi)
         assertTrue(isKorg)
     }
 
