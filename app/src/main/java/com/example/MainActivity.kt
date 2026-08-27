@@ -1322,9 +1322,10 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         text = "",
                         isSelected = true,
                         onClick = { showConfigMenu = true },
-                        horizontalPadding = 5.dp,
-                        verticalPadding = 3.dp,
-                        icon = { Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color.White, modifier = Modifier.size(13.dp)) }
+                        modifier = Modifier.width(56.dp).height(36.dp),
+                        horizontalPadding = 6.dp,
+                        verticalPadding = 2.dp,
+                        icon = { Icon(Icons.Default.Menu, contentDescription = "Menu", tint = Color.White, modifier = Modifier.size(16.dp)) }
                     )
 
                     DropdownMenu(
@@ -1408,21 +1409,23 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         newConfigName = currentConfigName
                         showSaveDialog = true
                     },
-                    fontSize = 10.sp,
-                    horizontalPadding = 5.dp,
-                    verticalPadding = 3.dp,
-                    icon = { Icon(Icons.Default.Save, contentDescription = "Save", tint = Color.White, modifier = Modifier.size(12.dp)) }
+                    modifier = Modifier.width(56.dp).height(36.dp),
+                    fontSize = 11.sp,
+                    horizontalPadding = 4.dp,
+                    verticalPadding = 2.dp,
+                    icon = { Icon(Icons.Default.Save, contentDescription = "Save", tint = Color.White, modifier = Modifier.size(13.dp)) }
                 )
 
                 // Add Sound Slot Button
                 SmallGlossyButton(
-                    text = "+ Slot",
+                    text = "Slot",
                     isSelected = false,
                     onClick = { viewModel.addSoundPreset() },
-                    fontSize = 10.sp,
-                    horizontalPadding = 5.dp,
-                    verticalPadding = 3.dp,
-                    icon = { Icon(Icons.Default.Add, contentDescription = "Add Sound Slot", tint = Color.White, modifier = Modifier.size(12.dp)) }
+                    modifier = Modifier.width(56.dp).height(36.dp),
+                    fontSize = 11.sp,
+                    horizontalPadding = 4.dp,
+                    verticalPadding = 2.dp,
+                    icon = { Icon(Icons.Default.Add, contentDescription = "Add Sound Slot", tint = Color.White, modifier = Modifier.size(13.dp)) }
                 )
             }
 
