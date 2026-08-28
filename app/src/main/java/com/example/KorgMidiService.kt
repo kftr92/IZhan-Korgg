@@ -85,6 +85,7 @@ class KorgMidiService : Service() {
         const val CMD_ESP32_SELECT_SLOT: Byte = 0x05.toByte()
         const val CMD_ESP32_SAVE_SLOT_NAME: Byte = 0x06.toByte()
         const val CMD_ESP32_RX_SLOT_NAME: Byte = 0x07.toByte()
+        const val CMD_ESP32_SAVE_SLOT_SYSEX: Byte = 0x08.toByte()
     }
 
     private val binder = KorgMidiBinder()
@@ -917,6 +918,71 @@ class KorgMidiService : Service() {
         } catch (e: Exception) {
             Log.e("KorgMidiService", "Error sending zhanhostmidi Slot Name SysEx", e)
             logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Slot Name", e.localizedMessage ?: "Unknown error")
+        }
+    }
+
+    fun sendEsp32SlotSysex(slotIndex: Int, sysexHex: String?) {
+        val port = inputPort ?: run {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Skipped: Port Closed", "Slot $slotIndex")
+            return
+        }
+        if (sysexHex.isNullOrBlank()) {
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Skipped: Empty Payload", "Slot ${slotIndex + 1}")
+            return
+        }
+        try {
+            val cleanHex = sysexHex.trim().replace(" ", "").replace("0x", "", ignoreCase = true)
+            if (!cleanHex.matches(Regex("^[0-9A-Fa-f]+$"))) {
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: Non-hex characters", cleanHex)
+                return
+            }
+            if (cleanHex.length % 2 != 0 || cleanHex.length < 4) {
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: Invalid length", cleanHex)
+                return
+            }
+            val rawBytes = ByteArray(cleanHex.length / 2)
+            for (i in rawBytes.indices) {
+                val byteIndex = i * 2
+                rawBytes[i] = cleanHex.substring(byteIndex, byteIndex + 2).toInt(16).toByte()
+            }
+            if (rawBytes[0] != SYSEX_START || rawBytes[rawBytes.size - 1] != SYSEX_END) {
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: Must start with F0 and end with F7", cleanHex)
+                return
+            }
+            if (rawBytes.size > 120) {
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: SysEx terlalu panjang. Maksimum 120 byte.", "Size: ${rawBytes.size}")
+                return
+            }
+
+            val sIdx = slotIndex.coerceIn(0, 127).toByte()
+            val rawLen = rawBytes.size.toByte()
+
+            // Packet structure: F0 7D 08 <slotIndex> <length> <raw SysEx bytes> F7
+            val sysexPacket = ByteArray(5 + rawBytes.size + 1)
+            sysexPacket[0] = SYSEX_START
+            sysexPacket[1] = SYSEX_MANUFACTURER_ID
+            sysexPacket[2] = CMD_ESP32_SAVE_SLOT_SYSEX
+            sysexPacket[3] = sIdx
+            sysexPacket[4] = rawLen
+            System.arraycopy(rawBytes, 0, sysexPacket, 5, rawBytes.size)
+            sysexPacket[sysexPacket.size - 1] = SYSEX_END
+
+            port.send(sysexPacket, 0, sysexPacket.size)
+
+            val rawHexFormatted = cleanHex.chunked(2).joinToString(" ") { it.uppercase() }
+            val fullPacketHex = bytesToHex(sysexPacket)
+            val slotNumber = slotIndex + 1
+
+            val summaryLog = "[ESP32 PUSH SYSEX]\nSLOT=$slotNumber\nLEN=${rawBytes.size}\nHEX=$rawHexFormatted"
+            logTraffic(
+                MidiTrafficLog.Direction.OUT,
+                summaryLog,
+                fullPacketHex
+            )
+            Log.d("KorgMidiService", summaryLog)
+        } catch (e: Exception) {
+            Log.e("KorgMidiService", "Error sending zhanhostmidi Slot SysEx", e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Slot SysEx", e.localizedMessage ?: "Unknown error")
         }
     }
 

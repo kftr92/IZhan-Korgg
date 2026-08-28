@@ -271,6 +271,10 @@ class KorgMidiController(
         midiService?.sendEsp32SlotName(slotIndex, name)
     }
 
+    fun sendEsp32SlotSysex(slotIndex: Int, sysexHex: String?) {
+        midiService?.sendEsp32SlotSysex(slotIndex, sysexHex)
+    }
+
     fun sendEsp32Transpose(transpose: Int) {
         midiService?.sendEsp32Transpose(transpose)
     }
