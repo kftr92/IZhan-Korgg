@@ -344,5 +344,85 @@ class ExampleUnitTest {
         )
         assertArrayEquals(expected, sysexPacket)
     }
+
+    @Test
+    fun testPushSequence_SysexSlot_OnlySendsCmd01_Cmd08_Cmd06() {
+        val sentPackets = mutableListOf<ByteArray>()
+        val slotIndex = 11 // Slot 12
+        val preset = SoundPreset(
+            name = "Sound 12",
+            msb = 0,
+            lsb = 0,
+            program = 0,
+            sysexHex = "F0 5B F7",
+            mode = "Prog",
+            triggerNote = 47,
+            outputNote = -1,
+            outputVelocity = 100,
+            buttonType = "SYSEX",
+            midiChannel = 0
+        )
+
+        // 1. CMD 01
+        val cmd01 = byteArrayOf(
+            0xF0.toByte(), 0x7D.toByte(), 0x01.toByte(),
+            slotIndex.toByte(), 47.toByte(), 0.toByte(), 0.toByte(), 0.toByte(), 0.toByte(),
+            0.toByte(), 127.toByte(), 100.toByte(), 3.toByte(), 0xF7.toByte()
+        )
+        sentPackets.add(cmd01)
+
+        // 2. CMD 08 (if SYSEX)
+        val isSysex = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
+        if (isSysex && preset.sysexHex.isNotBlank()) {
+            val cleanHex = preset.sysexHex.replace(" ", "")
+            val raw = ByteArray(cleanHex.length / 2)
+            for (i in raw.indices) {
+                raw[i] = cleanHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+            }
+            val cmd08 = ByteArray(5 + raw.size + 1)
+            cmd08[0] = 0xF0.toByte()
+            cmd08[1] = 0x7D.toByte()
+            cmd08[2] = 0x08.toByte()
+            cmd08[3] = slotIndex.toByte()
+            cmd08[4] = raw.size.toByte()
+            System.arraycopy(raw, 0, cmd08, 5, raw.size)
+            cmd08[cmd08.size - 1] = 0xF7.toByte()
+            sentPackets.add(cmd08)
+        }
+
+        // 3. CMD 06
+        val nameBytes = preset.name.toByteArray(Charsets.UTF_8)
+        val cmd06 = ByteArray(5 + nameBytes.size + 1)
+        cmd06[0] = 0xF0.toByte()
+        cmd06[1] = 0x7D.toByte()
+        cmd06[2] = 0x06.toByte()
+        cmd06[3] = slotIndex.toByte()
+        cmd06[4] = nameBytes.size.toByte()
+        System.arraycopy(nameBytes, 0, cmd06, 5, nameBytes.size)
+        cmd06[cmd06.size - 1] = 0xF7.toByte()
+        sentPackets.add(cmd06)
+
+        // Verify sent packets count is exactly 3
+        assertEquals(3, sentPackets.size)
+        // Verify 1st packet is CMD 01 (Type = 3)
+        assertEquals(0x01.toByte(), sentPackets[0][2])
+        assertEquals(0x03.toByte(), sentPackets[0][12]) // buttonTypeCode = 3
+        // Verify 2nd packet is CMD 08 with wrapped SysEx
+        assertEquals(0x08.toByte(), sentPackets[1][2])
+        assertEquals(0x0B.toByte(), sentPackets[1][3]) // slot 11
+        assertEquals(0x03.toByte(), sentPackets[1][4]) // length 3
+        assertEquals(0xF0.toByte(), sentPackets[1][5])
+        assertEquals(0x5B.toByte(), sentPackets[1][6])
+        assertEquals(0xF7.toByte(), sentPackets[1][7])
+        assertEquals(0xF7.toByte(), sentPackets[1][8]) // sysex end
+        // Verify 3rd packet is CMD 06
+        assertEquals(0x06.toByte(), sentPackets[2][2])
+
+        // Verify that raw SysEx F0 5B F7 is NOT present in the sent packet list as a standalone packet
+        val rawSysex = byteArrayOf(0xF0.toByte(), 0x5B.toByte(), 0xF7.toByte())
+        for (pkt in sentPackets) {
+            assertFalse("Raw SysEx must not be sent directly on PUSH!", java.util.Arrays.equals(rawSysex, pkt))
+        }
+    }
 }
 

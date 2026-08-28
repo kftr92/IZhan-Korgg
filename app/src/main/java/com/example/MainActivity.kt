@@ -1444,9 +1444,6 @@ fun MidiControllerApp(viewModel: MainViewModel) {
             onDisconnectDevice = { device ->
                 viewModel.disconnectBleDevice(device)
             },
-            onOpenDiagnostic = {
-                showDiagnosticDialog = true
-            },
             onDismiss = {
                 viewModel.stopBleScan()
                 showBleMidiDialog = false
@@ -1567,6 +1564,15 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                             },
                             leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null, tint = Color(0xFFFF6D00), modifier = Modifier.size(16.dp)) }
                         )
+                        HorizontalDivider(color = Color(0xFF13264A))
+                        DropdownMenuItem(
+                            text = { Text("Diagnostic Panel", color = Color(0xFFFF9E00), fontSize = 12.sp) },
+                            onClick = {
+                                showConfigMenu = false
+                                showDiagnosticDialog = true
+                            },
+                            leadingIcon = { Icon(Icons.Default.Info, contentDescription = "Diagnostic Panel", tint = Color(0xFFFF9E00), modifier = Modifier.size(16.dp)) }
+                        )
                     }
                 }
 
@@ -1673,24 +1679,6 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                             imageVector = if (hasBleConnected) Icons.Default.BluetoothConnected else if (isScanningBle) Icons.Default.BluetoothSearching else Icons.Default.Bluetooth,
                             contentDescription = "BLE MIDI",
                             tint = if (hasBleConnected) Color(0xFF00E676) else if (isScanningBle) Color(0xFF00E5FF) else Color.White,
-                            modifier = Modifier.size(13.dp)
-                        )
-                    }
-                )
-
-                // DIAGNOSTIC PANEL Button
-                SmallGlossyButton(
-                    text = "DIAG",
-                    isSelected = showDiagnosticDialog,
-                    onClick = { showDiagnosticDialog = true },
-                    fontSize = 10.sp,
-                    horizontalPadding = 5.dp,
-                    verticalPadding = 3.dp,
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = "MIDI / BLE Diagnostic Panel",
-                            tint = if (showDiagnosticDialog) Color(0xFFFF9E00) else Color(0xFF00E5FF),
                             modifier = Modifier.size(13.dp)
                         )
                     }
@@ -2814,7 +2802,6 @@ fun BleMidiDialog(
     onStopScan: () -> Unit,
     onConnectDevice: (android.bluetooth.BluetoothDevice, asInput: Boolean, asOutput: Boolean) -> Unit,
     onDisconnectDevice: (android.bluetooth.BluetoothDevice) -> Unit,
-    onOpenDiagnostic: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "ble_pulse")
@@ -3066,18 +3053,7 @@ fun BleMidiDialog(
                 Text("Close", color = Color(0xFF00E5FF), fontWeight = FontWeight.Bold)
             }
         },
-        dismissButton = {
-            TextButton(onClick = {
-                onDismiss()
-                onOpenDiagnostic()
-            }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFFF9E00), modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Open Diagnostic Panel", color = Color(0xFFFF9E00), fontWeight = FontWeight.Bold)
-                }
-            }
-        },
+        dismissButton = null,
         containerColor = Color(0xFF061022),
         tonalElevation = 8.dp
     )
