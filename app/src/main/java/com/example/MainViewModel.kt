@@ -525,7 +525,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val buttonTypeCode = when {
             preset.buttonType.equals("NOTE", ignoreCase = true) -> 1
             preset.buttonType.equals("CC", ignoreCase = true) -> 2
-            preset.buttonType.equals("SX", ignoreCase = true) -> 3
+            preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true) -> 3
             preset.buttonType.equals("CUST", ignoreCase = true) -> 4
             else -> 0 // "PGM" / default
         }
@@ -584,6 +584,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val targetChannel = if (preset.midiChannel in 0..15) preset.midiChannel else _channel.value
         val isNoteMode = preset.buttonType.equals("NOTE", ignoreCase = true) || (preset.buttonType.isBlank() && preset.outputNote in 0..126)
+        val isSysexMode = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
 
         if (isNoteMode) {
             // MODE NOTE MIDI: ONLY send Note On. NO Program Change or Mode Change!
@@ -599,8 +600,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             activePadNotes[index] = Pair(transposedNote, targetChannel)
             midiController.sendNoteOn(targetChannel, transposedNote, velocity)
+        } else if (isSysexMode) {
+            // MODE SYSEX: Kirim SysEx raw ByteArray
+            if (preset.sysexHex.isNotBlank()) {
+                midiController.sendSysexHex(preset.sysexHex)
+            }
         } else {
-            // MODE PROGRAM CHANGE (PGM / DEFAULT / SX / CUST): ONLY send Bank/Program/Mode. NO Note On!
+            // MODE PROGRAM CHANGE (PGM / DEFAULT): ONLY send Bank/Program/Mode. NO Note On!
             midiController.updateCurrentPatch(
                 msb = preset.msb,
                 lsb = preset.lsb,

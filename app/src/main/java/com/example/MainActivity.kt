@@ -102,6 +102,39 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.theme.MyApplicationTheme
 
+fun validateSysexHex(input: String): Pair<Boolean, String?> {
+    val trimmed = input.trim()
+    if (trimmed.isEmpty()) {
+        return Pair(false, "SysEx cannot be empty")
+    }
+    val clean = trimmed.replace(" ", "").replace("0x", "", ignoreCase = true)
+    if (!clean.matches(Regex("^[0-9A-Fa-f]+$"))) {
+        return Pair(false, "Invalid characters: only HEX (0-9, A-F) allowed")
+    }
+    if (clean.length % 2 != 0) {
+        return Pair(false, "Incomplete byte: HEX length must be even")
+    }
+    if (clean.length < 4) {
+        return Pair(false, "SysEx too short (must be at least F0 ... F7)")
+    }
+    if (!clean.startsWith("F0", ignoreCase = true)) {
+        return Pair(false, "SysEx must start with F0")
+    }
+    if (!clean.endsWith("F7", ignoreCase = true)) {
+        return Pair(false, "SysEx must end with F7")
+    }
+    return Pair(true, null)
+}
+
+fun formatSysexHex(input: String): String {
+    val clean = input.trim().replace(" ", "").replace("0x", "", ignoreCase = true)
+    return if (clean.length % 2 == 0 && clean.matches(Regex("^[0-9A-Fa-f]+$"))) {
+        clean.chunked(2).joinToString(" ") { it.uppercase() }
+    } else {
+        input.trim().uppercase()
+    }
+}
+
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
@@ -486,9 +519,11 @@ fun SoundSlotCard(
 
             // Bottom trigger & output note indicator
             val triggerLabel = if (preset.triggerNote >= 0) "IN:${preset.triggerNote}" else "IN:${36 + index}"
+            val isNoteMode = preset.buttonType.equals("NOTE", ignoreCase = true)
+            val isSysexMode = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
             val baseOutNote = if (preset.outputNote in 0..127) {
                 preset.outputNote
-            } else if (preset.buttonType == "NOTE") {
+            } else if (isNoteMode) {
                 (60 + index).coerceIn(0, 127)
             } else {
                 -1
@@ -499,7 +534,9 @@ fun SoundSlotCard(
                 -1
             }
             val notes = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-            val outLabel = if (effectiveOutNote in 0..127) {
+            val outLabel = if (isSysexMode) {
+                "SYSEX"
+            } else if (effectiveOutNote in 0..127) {
                 "${notes[effectiveOutNote % 12]}${(effectiveOutNote / 12) - 1}"
             } else null
 
@@ -735,8 +772,14 @@ fun MidiControllerApp(viewModel: MainViewModel) {
         var lsb by remember(preset) { mutableStateOf(preset.lsb.toString()) }
         var program by remember(preset) { mutableStateOf(preset.program.toString()) }
         var sysexHex by remember(preset) { mutableStateOf(preset.sysexHex) }
+        var sysexError by remember(preset) { mutableStateOf<String?>(null) }
         var selectedMode by remember(preset) { mutableStateOf(preset.mode) } // Prog, Combi, Favourites
-        var selectedButtonType by remember(preset.buttonType) { mutableStateOf(if (preset.buttonType.isBlank()) "PGM" else preset.buttonType) } // PGM, NOTE, CC, SX, CUST
+        val initialBtnType = when {
+            preset.buttonType.equals("NOTE", ignoreCase = true) -> "NOTE"
+            preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true) -> "SYSEX"
+            else -> "PGM"
+        }
+        var selectedButtonType by remember(preset.buttonType) { mutableStateOf(initialBtnType) } // PGM, NOTE, SYSEX
         var triggerNoteState by remember(preset.triggerNote) { mutableIntStateOf(preset.triggerNote) }
         var outputNoteState by remember(preset.outputNote) { mutableStateOf(if (preset.outputNote >= 0) preset.outputNote.toString() else "") }
         var outputVelocityState by remember(preset.outputVelocity) { mutableStateOf(preset.outputVelocity.toString()) }
@@ -781,7 +824,7 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
                 ) {
-                    // Button Name & Button Type row
+                    // Button Name row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -796,15 +839,15 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         )
                     }
 
-                    // Button Type Chips
+                    // Button Type Chips: PGM, NOTE, SYSEX
                     Column {
                         Text("Button Type", color = Color.Gray, fontSize = 12.sp)
                         Spacer(Modifier.height(4.dp))
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            listOf("PGM", "NOTE", "CC", "SX", "CUST").forEach { type ->
+                            listOf("PGM", "NOTE", "SYSEX").forEach { type ->
                                 val isSelected = selectedButtonType == type
                                 Surface(
                                     modifier = Modifier
@@ -848,162 +891,75 @@ fun MidiControllerApp(viewModel: MainViewModel) {
 
                     Divider(color = Color(0xFF13264A))
 
-                    // Mode Selection Options (Stacked Top to Bottom)
-                    Column {
-                        Text("Mode", color = Color.Gray, fontSize = 11.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            listOf("Prog", "Combi", "Favourites").forEach { modeOption ->
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(30.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(if (selectedMode == modeOption) Color(0xFF182D54) else Color(0xFF081226))
-                                        .border(
-                                            1.dp,
-                                            if (selectedMode == modeOption) Color(0xFFFF6D00) else Color.Transparent,
-                                            RoundedCornerShape(6.dp)
+                    if (selectedButtonType == "PGM") {
+                        // Mode Selection Options (Stacked Top to Bottom)
+                        Column {
+                            Text("Mode", color = Color.Gray, fontSize = 11.sp)
+                            Spacer(Modifier.height(2.dp))
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                listOf("Prog", "Combi", "Favourites").forEach { modeOption ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(30.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (selectedMode == modeOption) Color(0xFF182D54) else Color(0xFF081226))
+                                            .border(
+                                                1.dp,
+                                                if (selectedMode == modeOption) Color(0xFFFF6D00) else Color.Transparent,
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .clickable { selectedMode = modeOption }
+                                            .padding(horizontal = 6.dp)
+                                    ) {
+                                        RadioButton(
+                                            selected = selectedMode == modeOption,
+                                            onClick = { selectedMode = modeOption },
+                                            colors = RadioButtonDefaults.colors(selectedColor = Color(0xFFFF6D00)),
+                                            modifier = Modifier.scale(0.75f)
                                         )
-                                        .clickable { selectedMode = modeOption }
-                                        .padding(horizontal = 6.dp)
-                                ) {
-                                    RadioButton(
-                                        selected = selectedMode == modeOption,
-                                        onClick = { selectedMode = modeOption },
-                                        colors = RadioButtonDefaults.colors(selectedColor = Color(0xFFFF6D00)),
-                                        modifier = Modifier.scale(0.75f)
-                                    )
-                                    Spacer(Modifier.width(2.dp))
-                                    Text(
-                                        text = modeOption,
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (selectedMode == modeOption) FontWeight.Bold else FontWeight.Normal
-                                    )
+                                        Spacer(Modifier.width(2.dp))
+                                        Text(
+                                            text = modeOption,
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (selectedMode == modeOption) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Bank MSB, LSB, Program fields
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = msb,
-                            onValueChange = { msb = it.filter { c -> c.isDigit() } },
-                            label = { Text("Bank MSB", color = Color(0xFFB0BEC5)) },
-                            modifier = Modifier.weight(1f),
-                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                        )
-                        OutlinedTextField(
-                            value = lsb,
-                            onValueChange = { lsb = it.filter { c -> c.isDigit() } },
-                            label = { Text("Bank LSB", color = Color(0xFFB0BEC5)) },
-                            modifier = Modifier.weight(1f),
-                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                        )
-                        OutlinedTextField(
-                            value = program,
-                            onValueChange = { program = it.filter { c -> c.isDigit() } },
-                            label = { Text("Program", color = Color(0xFFB0BEC5)) },
-                            modifier = Modifier.weight(1f),
-                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                        )
-                    }
-
-                    if (selectedButtonType == "SX" || selectedButtonType == "CUST") {
-                        OutlinedTextField(
-                            value = sysexHex,
-                            onValueChange = { sysexHex = it },
-                            label = { Text("Custom SysEx (Hex e.g. F0 42 30 00 F7)", color = Color(0xFFB0BEC5)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                        )
-                    }
-
-                    // MIDI Output Note Mapping Card
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF040A18), RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFF13264A), RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        Text("MIDI Output Note Configuration", color = Color(0xFFFF9E00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(4.dp))
-                        val parsedOutNote = outputNoteState.toIntOrNull() ?: -1
-                        val baseOutNote = if (parsedOutNote in 0..127) parsedOutNote else if (selectedButtonType == "NOTE") (60 + editPresetIndex!!) else -1
-                        val effectiveOutNote = if (baseOutNote in 0..127) (baseOutNote - transpose).coerceIn(0, 127) else -1
-                        val noteLabel = if (effectiveOutNote in 0..127) {
-                            val notesArr = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-                            val oct = (effectiveOutNote / 12) - 1
-                            if (transpose != 0) {
-                                "Note $effectiveOutNote (${notesArr[effectiveOutNote % 12]}$oct) [Base: $baseOutNote, Trans: ${if (transpose > 0) "+$transpose" else transpose}]"
-                            } else {
-                                "Note $effectiveOutNote (${notesArr[effectiveOutNote % 12]}$oct)"
-                            }
-                        } else {
-                            "Disabled (Sends PC/SysEx Program Change)"
-                        }
-                        val channelLabel = if (midiChannelState < 0) "Global Ch" else "Ch ${midiChannelState + 1}"
-                        Text(
-                            text = "Output Signal: $noteLabel [$channelLabel]",
-                            color = Color.White,
-                            fontSize = 11.sp
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
+                        // Bank MSB, LSB, Program fields
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
-                                value = outputNoteState,
-                                onValueChange = { outputNoteState = it.filter { c -> c.isDigit() } },
-                                label = { Text("Out Note (0-127)", color = Color(0xFFB0BEC5), fontSize = 11.sp) },
+                                value = msb,
+                                onValueChange = { msb = it.filter { c -> c.isDigit() } },
+                                label = { Text("Bank MSB", color = Color(0xFFB0BEC5)) },
                                 modifier = Modifier.weight(1f),
                                 colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
                             )
                             OutlinedTextField(
-                                value = outputVelocityState,
-                                onValueChange = { outputVelocityState = it.filter { c -> c.isDigit() } },
-                                label = { Text("Velocity (1-127)", color = Color(0xFFB0BEC5), fontSize = 11.sp) },
+                                value = lsb,
+                                onValueChange = { lsb = it.filter { c -> c.isDigit() } },
+                                label = { Text("Bank LSB", color = Color(0xFFB0BEC5)) },
+                                modifier = Modifier.weight(1f),
+                                colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                            )
+                            OutlinedTextField(
+                                value = program,
+                                onValueChange = { program = it.filter { c -> c.isDigit() } },
+                                label = { Text("Program", color = Color(0xFFB0BEC5)) },
                                 modifier = Modifier.weight(1f),
                                 colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
                             )
                         }
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            listOf(36 to "C2", 48 to "C3", 60 to "C4", 72 to "C5").forEach { (noteVal, noteName) ->
-                                Button(
-                                    onClick = { outputNoteState = noteVal.toString() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E2248)),
-                                    shape = RoundedCornerShape(4.dp),
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text(noteName, fontSize = 10.sp, color = Color.White)
-                                }
-                            }
-                            if (outputNoteState.isNotBlank()) {
-                                TextButton(
-                                    onClick = { outputNoteState = "" },
-                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Clear Note", fontSize = 10.sp, color = Color.Gray)
-                                }
-                            }
-                        }
 
-                        Spacer(Modifier.height(6.dp))
-
-                        // MIDI Channel Dropdown Selector
+                        // MIDI Output Channel Dropdown Selector for PGM
                         var channelDropdownExpanded by remember { mutableStateOf(false) }
                         Box(modifier = Modifier.fillMaxWidth()) {
                             OutlinedTextField(
@@ -1063,9 +1019,183 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                                 }
                             }
                         }
+                    } else if (selectedButtonType == "NOTE") {
+                        // MIDI Output Note Mapping Card
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF040A18), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color(0xFF13264A), RoundedCornerShape(8.dp))
+                                .padding(8.dp)
+                        ) {
+                            Text("MIDI Output Note Configuration", color = Color(0xFFFF9E00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            val parsedOutNote = outputNoteState.toIntOrNull() ?: -1
+                            val baseOutNote = if (parsedOutNote in 0..127) parsedOutNote else (60 + editPresetIndex!!)
+                            val effectiveOutNote = (baseOutNote - transpose).coerceIn(0, 127)
+                            val noteLabel = run {
+                                val notesArr = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+                                val oct = (effectiveOutNote / 12) - 1
+                                if (transpose != 0) {
+                                    "Note $effectiveOutNote (${notesArr[effectiveOutNote % 12]}$oct) [Base: $baseOutNote, Trans: ${if (transpose > 0) "+$transpose" else transpose}]"
+                                } else {
+                                    "Note $effectiveOutNote (${notesArr[effectiveOutNote % 12]}$oct)"
+                                }
+                            }
+                            val channelLabel = if (midiChannelState < 0) "Global Ch" else "Ch ${midiChannelState + 1}"
+                            Text(
+                                text = "Output Signal: $noteLabel [$channelLabel]",
+                                color = Color.White,
+                                fontSize = 11.sp
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = outputNoteState,
+                                    onValueChange = { outputNoteState = it.filter { c -> c.isDigit() } },
+                                    label = { Text("Out Note (0-127)", color = Color(0xFFB0BEC5), fontSize = 11.sp) },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                                )
+                                OutlinedTextField(
+                                    value = outputVelocityState,
+                                    onValueChange = { outputVelocityState = it.filter { c -> c.isDigit() } },
+                                    label = { Text("Velocity (1-127)", color = Color(0xFFB0BEC5), fontSize = 11.sp) },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                listOf(36 to "C2", 48 to "C3", 60 to "C4", 72 to "C5").forEach { (noteVal, noteName) ->
+                                    Button(
+                                        onClick = { outputNoteState = noteVal.toString() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E2248)),
+                                        shape = RoundedCornerShape(4.dp),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(noteName, fontSize = 10.sp, color = Color.White)
+                                    }
+                                }
+                                if (outputNoteState.isNotBlank()) {
+                                    TextButton(
+                                        onClick = { outputNoteState = "" },
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Clear Note", fontSize = 10.sp, color = Color.Gray)
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(6.dp))
+
+                            // MIDI Channel Dropdown Selector for NOTE
+                            var channelDropdownExpanded by remember { mutableStateOf(false) }
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                OutlinedTextField(
+                                    value = if (midiChannelState < 0) "Global / Main Channel" else "Channel ${midiChannelState + 1}",
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("MIDI Output Channel", color = Color(0xFFB0BEC5), fontSize = 11.sp) },
+                                    trailingIcon = {
+                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = channelDropdownExpanded)
+                                    },
+                                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { channelDropdownExpanded = true }
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .clickable { channelDropdownExpanded = true }
+                                )
+
+                                DropdownMenu(
+                                    expanded = channelDropdownExpanded,
+                                    onDismissRequest = { channelDropdownExpanded = false },
+                                    modifier = Modifier.background(Color(0xFF0A1B3B))
+                                ) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "Global / Main Channel",
+                                                color = if (midiChannelState == -1) Color(0xFFFF9E00) else Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (midiChannelState == -1) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        onClick = {
+                                            midiChannelState = -1
+                                            channelDropdownExpanded = false
+                                        }
+                                    )
+                                    Divider(color = Color(0xFF13264A))
+                                    for (ch in 0..15) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "Channel ${ch + 1}",
+                                                    color = if (midiChannelState == ch) Color(0xFFFF9E00) else Color.White,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = if (midiChannelState == ch) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            },
+                                            onClick = {
+                                                midiChannelState = ch
+                                                channelDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else if (selectedButtonType == "SYSEX") {
+                        // SysEx Message Configuration Card
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF040A18), RoundedCornerShape(8.dp))
+                                .border(1.dp, if (sysexError != null) Color(0xFFFF5252) else Color(0xFF13264A), RoundedCornerShape(8.dp))
+                                .padding(8.dp)
+                        ) {
+                            Text("SysEx Message Configuration", color = Color(0xFFFF9E00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = sysexHex,
+                                onValueChange = {
+                                    sysexHex = it
+                                    if (it.isNotBlank()) {
+                                        val (isValid, err) = validateSysexHex(it)
+                                        sysexError = if (!isValid) err else null
+                                    } else {
+                                        sysexError = null
+                                    }
+                                },
+                                label = { Text("SYSEX HEX", color = Color(0xFFB0BEC5)) },
+                                placeholder = { Text("e.g. F0 42 30 00 01 15 12 F7", color = Color(0xFF546E7A)) },
+                                isError = sysexError != null,
+                                supportingText = {
+                                    if (sysexError != null) {
+                                        Text(sysexError!!, color = Color(0xFFFF5252), fontSize = 10.sp)
+                                    } else {
+                                        Text("Format: Hex bytes starting with F0 and ending with F7", color = Color(0xFF8090A8), fontSize = 10.sp)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                            )
+                        }
                     }
 
-                    // MIDI Input Control Mapping Card
+                    // MIDI Input Control Mapping Card (Always Available for All Button Types)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1127,7 +1257,7 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         }
                     }
 
-                    // Action Buttons Row: GET CURRENT PATCH, DELETE, & SAVE
+                    // Action Buttons Row: GET CURRENT PATCH (if PGM), DELETE, & SAVE
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1135,36 +1265,38 @@ fun MidiControllerApp(viewModel: MainViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Button(
-                            onClick = {
-                                val currentPatch = viewModel.midiController.currentDevicePatch.value
-                                if (currentPatch != null) {
-                                    msb = currentPatch.msb.toString()
-                                    lsb = currentPatch.lsb.toString()
-                                    program = currentPatch.program.toString()
-                                    selectedMode = currentPatch.mode
-                                    if (name.isBlank() || name.startsWith("Sound ")) {
-                                        name = "${currentPatch.mode} ${currentPatch.program}"
+                        if (selectedButtonType == "PGM") {
+                            Button(
+                                onClick = {
+                                    val currentPatch = viewModel.midiController.currentDevicePatch.value
+                                    if (currentPatch != null) {
+                                        msb = currentPatch.msb.toString()
+                                        lsb = currentPatch.lsb.toString()
+                                        program = currentPatch.program.toString()
+                                        selectedMode = currentPatch.mode
+                                        if (name.isBlank() || name.startsWith("Sound ")) {
+                                            name = "${currentPatch.mode} ${currentPatch.program}"
+                                        }
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Captured [${currentPatch.mode}]: MSB ${currentPatch.msb}, LSB ${currentPatch.lsb}, PC ${currentPatch.program}",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "No MIDI patch signal received yet. Change a program on your synth first.",
+                                            android.widget.Toast.LENGTH_LONG
+                                        ).show()
                                     }
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "Captured [${currentPatch.mode}]: MSB ${currentPatch.msb}, LSB ${currentPatch.lsb}, PC ${currentPatch.program}",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                } else {
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "No MIDI patch signal received yet. Change a program on your synth first.",
-                                        android.widget.Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E2248)),
-                            shape = RoundedCornerShape(6.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("GET CURRENT PATCH", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E2248)),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("GET CURRENT PATCH", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                            }
                         }
 
                         if (soundPresets.size > 1) {
@@ -1183,27 +1315,70 @@ fun MidiControllerApp(viewModel: MainViewModel) {
 
                         Button(
                             onClick = {
-                                val parsedOutNote = outputNoteState.toIntOrNull() ?: -1
-                                val parsedOutVel = outputVelocityState.toIntOrNull() ?: 100
-                                val updatedPreset = SoundPreset(
-                                    name = name.ifBlank { "Sound ${editPresetIndex!! + 1}" },
-                                    msb = msb.toIntOrNull() ?: 0,
-                                    lsb = lsb.toIntOrNull() ?: 0,
-                                    program = program.toIntOrNull() ?: 0,
-                                    sysexHex = sysexHex.trim(),
-                                    mode = selectedMode,
-                                    triggerNote = triggerNoteState,
-                                    outputNote = parsedOutNote,
-                                    outputVelocity = parsedOutVel.coerceIn(1, 127),
-                                    buttonType = selectedButtonType,
-                                    midiChannel = midiChannelState
-                                )
-                                viewModel.updatePreset(editPresetIndex!!, updatedPreset)
-                                editPresetIndex = null
+                                if (selectedButtonType == "SYSEX") {
+                                    val (isValid, errMsg) = validateSysexHex(sysexHex)
+                                    if (!isValid) {
+                                        sysexError = errMsg
+                                        android.widget.Toast.makeText(context, "Invalid SysEx: $errMsg", android.widget.Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    val cleanSysex = formatSysexHex(sysexHex)
+                                    val updatedPreset = SoundPreset(
+                                        name = name.ifBlank { "Sound ${editPresetIndex!! + 1}" },
+                                        msb = 0,
+                                        lsb = 0,
+                                        program = 0,
+                                        sysexHex = cleanSysex,
+                                        mode = "Prog",
+                                        triggerNote = triggerNoteState,
+                                        outputNote = -1,
+                                        outputVelocity = 100,
+                                        buttonType = "SYSEX",
+                                        midiChannel = midiChannelState
+                                    )
+                                    viewModel.updatePreset(editPresetIndex!!, updatedPreset)
+                                    editPresetIndex = null
+                                } else if (selectedButtonType == "NOTE") {
+                                    val parsedOutNote = outputNoteState.toIntOrNull() ?: (60 + editPresetIndex!!)
+                                    val parsedOutVel = outputVelocityState.toIntOrNull() ?: 100
+                                    val updatedPreset = SoundPreset(
+                                        name = name.ifBlank { "Sound ${editPresetIndex!! + 1}" },
+                                        msb = 0,
+                                        lsb = 0,
+                                        program = 0,
+                                        sysexHex = "",
+                                        mode = "Prog",
+                                        triggerNote = triggerNoteState,
+                                        outputNote = parsedOutNote.coerceIn(0, 127),
+                                        outputVelocity = parsedOutVel.coerceIn(1, 127),
+                                        buttonType = "NOTE",
+                                        midiChannel = midiChannelState
+                                    )
+                                    viewModel.updatePreset(editPresetIndex!!, updatedPreset)
+                                    editPresetIndex = null
+                                } else {
+                                    // PGM
+                                    val updatedPreset = SoundPreset(
+                                        name = name.ifBlank { "Sound ${editPresetIndex!! + 1}" },
+                                        msb = msb.toIntOrNull() ?: 0,
+                                        lsb = lsb.toIntOrNull() ?: 0,
+                                        program = program.toIntOrNull() ?: 0,
+                                        sysexHex = sysexHex.trim(),
+                                        mode = selectedMode,
+                                        triggerNote = triggerNoteState,
+                                        outputNote = -1,
+                                        outputVelocity = 100,
+                                        buttonType = "PGM",
+                                        midiChannel = midiChannelState
+                                    )
+                                    viewModel.updatePreset(editPresetIndex!!, updatedPreset)
+                                    editPresetIndex = null
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6D00)),
                             shape = RoundedCornerShape(6.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            modifier = if (selectedButtonType != "PGM") Modifier.weight(1f) else Modifier
                         ) {
                             Text("SAVE", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
                         }

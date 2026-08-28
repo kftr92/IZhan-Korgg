@@ -869,7 +869,7 @@ class KorgMidiService : Service() {
             val btnStr = when (buttonTypeCode) {
                 1 -> "NOTE"
                 2 -> "CC"
-                3 -> "SX"
+                3 -> "SYSEX"
                 4 -> "CUST"
                 else -> "PGM"
             }
@@ -1272,7 +1272,7 @@ class KorgMidiService : Service() {
                             0 -> "PGM"
                             1 -> "NOTE"
                             2 -> "CC"
-                            3 -> "SX"
+                            3 -> "SYSEX"
                             4 -> "CUST"
                             else -> if (outNote < 127) "NOTE" else "PGM"
                         }
