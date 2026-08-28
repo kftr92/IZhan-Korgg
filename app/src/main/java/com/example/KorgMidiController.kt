@@ -272,7 +272,13 @@ class KorgMidiController(
     }
 
     fun sendEsp32SlotSysex(slotIndex: Int, sysexHex: String?) {
+        val debugMsg = "[CMD08 DEBUG] CONTROLLER DISPATCH\nslotIndex=$slotIndex\nsysex=$sysexHex"
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, debugMsg, "")
+        android.util.Log.d("KorgMidiService", debugMsg)
         midiService?.sendEsp32SlotSysex(slotIndex, sysexHex)
+        val returnMsg = "[CMD08 DEBUG] CONTROLLER RETURNED"
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, returnMsg, "")
+        android.util.Log.d("KorgMidiService", returnMsg)
     }
 
     fun sendEsp32Transpose(transpose: Int) {

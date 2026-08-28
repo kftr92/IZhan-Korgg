@@ -922,22 +922,34 @@ class KorgMidiService : Service() {
     }
 
     fun sendEsp32SlotSysex(slotIndex: Int, sysexHex: String?) {
+        val callLog = "[CMD08 DEBUG] FUNCTION CALLED\nslotIndex=$slotIndex\nslotNumber=${slotIndex + 1}\nsysexHex=$sysexHex"
+        logTraffic(MidiTrafficLog.Direction.SYSTEM, callLog, "")
+        Log.d("KorgMidiService", callLog)
+
         val port = inputPort ?: run {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Skipped: Port Closed", "Slot $slotIndex")
+            val failMsg = "[CMD08 DEBUG] VALIDATION FAILED\nslotIndex=$slotIndex\nreason=Port Closed / inputPort is null"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, failMsg, "Slot $slotIndex")
+            Log.e("KorgMidiService", failMsg)
             return
         }
         if (sysexHex.isNullOrBlank()) {
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Skipped: Empty Payload", "Slot ${slotIndex + 1}")
+            val failMsg = "[CMD08 DEBUG] VALIDATION FAILED\nslotIndex=$slotIndex\nreason=Empty Payload"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, failMsg, "Slot ${slotIndex + 1}")
+            Log.e("KorgMidiService", failMsg)
             return
         }
         try {
             val cleanHex = sysexHex.trim().replace(" ", "").replace("0x", "", ignoreCase = true)
             if (!cleanHex.matches(Regex("^[0-9A-Fa-f]+$"))) {
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: Non-hex characters", cleanHex)
+                val failMsg = "[CMD08 DEBUG] VALIDATION FAILED\nslotIndex=$slotIndex\nreason=Non-hex characters ($cleanHex)"
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, failMsg, cleanHex)
+                Log.e("KorgMidiService", failMsg)
                 return
             }
             if (cleanHex.length % 2 != 0 || cleanHex.length < 4) {
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: Invalid length", cleanHex)
+                val failMsg = "[CMD08 DEBUG] VALIDATION FAILED\nslotIndex=$slotIndex\nreason=Invalid length (${cleanHex.length})"
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, failMsg, cleanHex)
+                Log.e("KorgMidiService", failMsg)
                 return
             }
             val rawBytes = ByteArray(cleanHex.length / 2)
@@ -946,13 +958,22 @@ class KorgMidiService : Service() {
                 rawBytes[i] = cleanHex.substring(byteIndex, byteIndex + 2).toInt(16).toByte()
             }
             if (rawBytes[0] != SYSEX_START || rawBytes[rawBytes.size - 1] != SYSEX_END) {
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: Must start with F0 and end with F7", cleanHex)
+                val failMsg = "[CMD08 DEBUG] VALIDATION FAILED\nslotIndex=$slotIndex\nreason=Must start with F0 and end with F7"
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, failMsg, cleanHex)
+                Log.e("KorgMidiService", failMsg)
                 return
             }
             if (rawBytes.size > 120) {
-                logTraffic(MidiTrafficLog.Direction.SYSTEM, "zhanhostmidi Slot SysEx Error: SysEx terlalu panjang. Maksimum 120 byte.", "Size: ${rawBytes.size}")
+                val failMsg = "[CMD08 DEBUG] VALIDATION FAILED\nslotIndex=$slotIndex\nreason=SysEx terlalu panjang. Maksimum 120 byte (actual: ${rawBytes.size})"
+                logTraffic(MidiTrafficLog.Direction.SYSTEM, failMsg, "Size: ${rawBytes.size}")
+                Log.e("KorgMidiService", failMsg)
                 return
             }
+
+            val rawHexFormatted = cleanHex.chunked(2).joinToString(" ") { it.uppercase() }
+            val validatedLog = "[CMD08 DEBUG] RAW SYSEX VALIDATED\nslotIndex=$slotIndex\nrawLength=${rawBytes.size}\nrawHex=$rawHexFormatted"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, validatedLog, "")
+            Log.d("KorgMidiService", validatedLog)
 
             val sIdx = slotIndex.coerceIn(0, 127).toByte()
             val rawLen = rawBytes.size.toByte()
@@ -967,12 +988,22 @@ class KorgMidiService : Service() {
             System.arraycopy(rawBytes, 0, sysexPacket, 5, rawBytes.size)
             sysexPacket[sysexPacket.size - 1] = SYSEX_END
 
+            val fullPacketHex = bytesToHex(sysexPacket)
+            val packetCreatedLog = "[CMD08 DEBUG] PACKET CREATED\nslotIndex=$slotIndex\nlength=${sysexPacket.size}\nHEX=$fullPacketHex"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, packetCreatedLog, fullPacketHex)
+            Log.d("KorgMidiService", packetCreatedLog)
+
+            val portSendLog = "[CMD08 DEBUG] PORT SEND\nslotIndex=$slotIndex\nlength=${sysexPacket.size}\nHEX=$fullPacketHex"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, portSendLog, fullPacketHex)
+            Log.d("KorgMidiService", portSendLog)
+
             port.send(sysexPacket, 0, sysexPacket.size)
 
-            val rawHexFormatted = cleanHex.chunked(2).joinToString(" ") { it.uppercase() }
-            val fullPacketHex = bytesToHex(sysexPacket)
-            val slotNumber = slotIndex + 1
+            val portSendReturnedLog = "[CMD08 DEBUG] PORT SEND RETURNED"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, portSendReturnedLog, "")
+            Log.d("KorgMidiService", portSendReturnedLog)
 
+            val slotNumber = slotIndex + 1
             val summaryLog = "[ESP32 PUSH SYSEX]\nSLOT=$slotNumber\nLEN=${rawBytes.size}\nHEX=$rawHexFormatted"
             logTraffic(
                 MidiTrafficLog.Direction.OUT,
@@ -981,8 +1012,9 @@ class KorgMidiService : Service() {
             )
             Log.d("KorgMidiService", summaryLog)
         } catch (e: Exception) {
-            Log.e("KorgMidiService", "Error sending zhanhostmidi Slot SysEx", e)
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, "TX Error: zhanhostmidi Slot SysEx", e.localizedMessage ?: "Unknown error")
+            val errorLog = "[CMD08 DEBUG] PORT SEND ERROR\n${e.localizedMessage ?: "Unknown error"}"
+            Log.e("KorgMidiService", errorLog, e)
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, errorLog, e.stackTraceToString())
         }
     }
 

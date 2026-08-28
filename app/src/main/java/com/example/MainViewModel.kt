@@ -501,6 +501,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     sendEsp32SlotConfig(index, preset)
                     val isSysex = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
                     if (isSysex && !preset.sysexHex.isNullOrBlank()) {
+                        val debugMsg = "[CMD08 DEBUG] VIEWMODEL DISPATCH\nmode=PUSH_SLOT\nslotIndex=$index\nslotNumber=${index + 1}\nbuttonType=${preset.buttonType}\nsysex=${preset.sysexHex}"
+                        midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, debugMsg, "")
+                        Log.d("KorgMidiService", debugMsg)
                         kotlinx.coroutines.delay(20)
                         sendEsp32SlotSysex(index, preset.sysexHex)
                     }
@@ -577,6 +580,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sendEsp32SlotConfig(idx, preset)
                 val isSysex = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
                 if (isSysex && !preset.sysexHex.isNullOrBlank()) {
+                    val debugMsg = "[CMD08 DEBUG] VIEWMODEL DISPATCH\nmode=PUSH_ALL\nslotIndex=$idx\nslotNumber=${idx + 1}\nbuttonType=${preset.buttonType}\nsysex=${preset.sysexHex}"
+                    midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, debugMsg, "")
+                    Log.d("KorgMidiService", debugMsg)
                     kotlinx.coroutines.delay(20)
                     sendEsp32SlotSysex(idx, preset.sysexHex)
                 }
