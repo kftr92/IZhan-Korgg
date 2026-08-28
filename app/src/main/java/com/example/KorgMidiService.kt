@@ -86,6 +86,49 @@ class KorgMidiService : Service() {
         const val CMD_ESP32_SAVE_SLOT_NAME: Byte = 0x06.toByte()
         const val CMD_ESP32_RX_SLOT_NAME: Byte = 0x07.toByte()
         const val CMD_ESP32_SAVE_SLOT_SYSEX: Byte = 0x08.toByte()
+
+        /**
+         * Packs arbitrary raw bytes into MIDI 7-bit safe data (chunks of 7 bytes with 1 header byte).
+         */
+        fun pack7BitData(data: ByteArray): ByteArray {
+            val output = mutableListOf<Byte>()
+            var i = 0
+            while (i < data.size) {
+                val chunkSize = minOf(7, data.size - i)
+                var header = 0
+                for (j in 0 until chunkSize) {
+                    if ((data[i + j].toInt() and 0x80) != 0) {
+                        header = header or (1 shl j)
+                    }
+                }
+                output.add(header.toByte())
+                for (j in 0 until chunkSize) {
+                    output.add((data[i + j].toInt() and 0x7F).toByte())
+                }
+                i += chunkSize
+            }
+            return output.toByteArray()
+        }
+
+        /**
+         * Unpacks MIDI 7-bit safe data back to original raw bytes.
+         */
+        fun unpack7BitData(encodedData: ByteArray, rawDataLen: Int): ByteArray {
+            val result = ByteArray(rawDataLen)
+            var encIdx = 0
+            var rawIdx = 0
+            while (encIdx < encodedData.size && rawIdx < rawDataLen) {
+                val header = encodedData[encIdx++].toInt() and 0xFF
+                val chunkSize = minOf(7, rawDataLen - rawIdx)
+                for (j in 0 until chunkSize) {
+                    if (encIdx >= encodedData.size) break
+                    val data7 = encodedData[encIdx++].toInt() and 0x7F
+                    val msb = if ((header and (1 shl j)) != 0) 0x80 else 0x00
+                    result[rawIdx++] = (data7 or msb).toByte()
+                }
+            }
+            return result
+        }
     }
 
     private val binder = KorgMidiBinder()
@@ -971,21 +1014,32 @@ class KorgMidiService : Service() {
             }
 
             val rawHexFormatted = cleanHex.chunked(2).joinToString(" ") { it.uppercase() }
-            val validatedLog = "[CMD08 DEBUG] RAW SYSEX VALIDATED\nslotIndex=$slotIndex\nrawLength=${rawBytes.size}\nrawHex=$rawHexFormatted"
-            logTraffic(MidiTrafficLog.Direction.SYSTEM, validatedLog, "")
-            Log.d("KorgMidiService", validatedLog)
+            val rawSysExLog = "[CMD08 DEBUG] RAW SYSEX\n$rawHexFormatted"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, rawSysExLog, "")
+            Log.d("KorgMidiService", rawSysExLog)
+
+            // Extract inner DATA between F0 and F7
+            val rawData = rawBytes.copyOfRange(1, rawBytes.size - 1)
+            val rawDataLen = rawData.size
+            val encodedData = pack7BitData(rawData)
+            val encodedLen = encodedData.size
+
+            val encodedHex = bytesToHex(encodedData)
+            val encodedLog = "[CMD08 DEBUG] ENCODED\nrawDataLen=$rawDataLen\nencodedLen=$encodedLen\nHEX=$encodedHex"
+            logTraffic(MidiTrafficLog.Direction.SYSTEM, encodedLog, "")
+            Log.d("KorgMidiService", encodedLog)
 
             val sIdx = slotIndex.coerceIn(0, 127).toByte()
-            val rawLen = rawBytes.size.toByte()
 
-            // Packet structure: F0 7D 08 <slotIndex> <length> <raw SysEx bytes> F7
-            val sysexPacket = ByteArray(5 + rawBytes.size + 1)
+            // Packet structure: F0 7D 08 <slotIndex> <rawDataLen> <encodedLen> <encodedData...> F7
+            val sysexPacket = ByteArray(6 + encodedData.size + 1)
             sysexPacket[0] = SYSEX_START
             sysexPacket[1] = SYSEX_MANUFACTURER_ID
             sysexPacket[2] = CMD_ESP32_SAVE_SLOT_SYSEX
             sysexPacket[3] = sIdx
-            sysexPacket[4] = rawLen
-            System.arraycopy(rawBytes, 0, sysexPacket, 5, rawBytes.size)
+            sysexPacket[4] = rawDataLen.toByte()
+            sysexPacket[5] = encodedLen.toByte()
+            System.arraycopy(encodedData, 0, sysexPacket, 6, encodedData.size)
             sysexPacket[sysexPacket.size - 1] = SYSEX_END
 
             val fullPacketHex = bytesToHex(sysexPacket)
