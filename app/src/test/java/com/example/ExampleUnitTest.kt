@@ -288,5 +288,61 @@ class ExampleUnitTest {
         assertEquals(39, noteOn.noteOrData1) // Note 39 (0x27)
         assertEquals(89, noteOn.velocityOrData2) // Vel 89 (0x59)
     }
+
+    @Test
+    fun testEsp32Cmd08_Slot12SysExPacket() {
+        // Slot 12 => slotIndex = 11 (0x0B), SysEx = F0 5B F7 (len = 3)
+        // Expected: F0 7D 08 0B 03 F0 5B F7 F7
+        val slotIndex = 11
+        val sysexHex = "F0 5B F7"
+        val cleanHex = sysexHex.trim().replace(" ", "")
+        val rawBytes = ByteArray(cleanHex.length / 2)
+        for (i in rawBytes.indices) {
+            val byteIndex = i * 2
+            rawBytes[i] = cleanHex.substring(byteIndex, byteIndex + 2).toInt(16).toByte()
+        }
+        val sysexPacket = ByteArray(5 + rawBytes.size + 1)
+        sysexPacket[0] = 0xF0.toByte()
+        sysexPacket[1] = 0x7D.toByte()
+        sysexPacket[2] = 0x08.toByte()
+        sysexPacket[3] = slotIndex.toByte()
+        sysexPacket[4] = rawBytes.size.toByte()
+        System.arraycopy(rawBytes, 0, sysexPacket, 5, rawBytes.size)
+        sysexPacket[sysexPacket.size - 1] = 0xF7.toByte()
+
+        val expected = byteArrayOf(
+            0xF0.toByte(), 0x7D.toByte(), 0x08.toByte(), 0x0B.toByte(), 0x03.toByte(),
+            0xF0.toByte(), 0x5B.toByte(), 0xF7.toByte(), 0xF7.toByte()
+        )
+        assertArrayEquals(expected, sysexPacket)
+    }
+
+    @Test
+    fun testEsp32Cmd08_Slot4SysExPacket() {
+        // Slot 4 => slotIndex = 3 (0x03), SysEx = F0 42 30 00 01 15 12 F7 (len = 8)
+        // Expected: F0 7D 08 03 08 F0 42 30 00 01 15 12 F7 F7
+        val slotIndex = 3
+        val sysexHex = "F0 42 30 00 01 15 12 F7"
+        val cleanHex = sysexHex.trim().replace(" ", "")
+        val rawBytes = ByteArray(cleanHex.length / 2)
+        for (i in rawBytes.indices) {
+            val byteIndex = i * 2
+            rawBytes[i] = cleanHex.substring(byteIndex, byteIndex + 2).toInt(16).toByte()
+        }
+        val sysexPacket = ByteArray(5 + rawBytes.size + 1)
+        sysexPacket[0] = 0xF0.toByte()
+        sysexPacket[1] = 0x7D.toByte()
+        sysexPacket[2] = 0x08.toByte()
+        sysexPacket[3] = slotIndex.toByte()
+        sysexPacket[4] = rawBytes.size.toByte()
+        System.arraycopy(rawBytes, 0, sysexPacket, 5, rawBytes.size)
+        sysexPacket[sysexPacket.size - 1] = 0xF7.toByte()
+
+        val expected = byteArrayOf(
+            0xF0.toByte(), 0x7D.toByte(), 0x08.toByte(), 0x03.toByte(), 0x08.toByte(),
+            0xF0.toByte(), 0x42.toByte(), 0x30.toByte(), 0x00.toByte(), 0x01.toByte(), 0x15.toByte(), 0x12.toByte(), 0xF7.toByte(), 0xF7.toByte()
+        )
+        assertArrayEquals(expected, sysexPacket)
+    }
 }
 

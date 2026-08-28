@@ -497,8 +497,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _soundPresets.value = current
             saveConfiguration(_currentConfigName.value)
             if (syncToEsp32) {
-                sendEsp32SlotConfig(index, preset)
-                sendEsp32SlotName(index, preset.name)
+                viewModelScope.launch {
+                    sendEsp32SlotConfig(index, preset)
+                    val isSysex = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
+                    if (isSysex && !preset.sysexHex.isNullOrBlank()) {
+                        kotlinx.coroutines.delay(20)
+                        sendEsp32SlotSysex(index, preset.sysexHex)
+                    }
+                    kotlinx.coroutines.delay(20)
+                    sendEsp32SlotName(index, preset.name)
+                }
             }
         }
     }
@@ -548,6 +556,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         midiController.sendEsp32SlotName(slotIndex, name)
     }
 
+    fun sendEsp32SlotSysex(slotIndex: Int, sysexHex: String?) {
+        midiController.sendEsp32SlotSysex(slotIndex, sysexHex)
+    }
+
     fun syncAllSlotsToEsp32() {
         val presets = _soundPresets.value
         midiController.logTraffic(
@@ -563,6 +575,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ""
                 )
                 sendEsp32SlotConfig(idx, preset)
+                val isSysex = preset.buttonType.equals("SYSEX", ignoreCase = true) || preset.buttonType.equals("SX", ignoreCase = true)
+                if (isSysex && !preset.sysexHex.isNullOrBlank()) {
+                    kotlinx.coroutines.delay(20)
+                    sendEsp32SlotSysex(idx, preset.sysexHex)
+                }
                 kotlinx.coroutines.delay(20)
                 sendEsp32SlotName(idx, preset.name)
                 kotlinx.coroutines.delay(20)

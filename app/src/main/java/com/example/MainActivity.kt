@@ -123,6 +123,9 @@ fun validateSysexHex(input: String): Pair<Boolean, String?> {
     if (!clean.endsWith("F7", ignoreCase = true)) {
         return Pair(false, "SysEx must end with F7")
     }
+    if (clean.length / 2 > 120) {
+        return Pair(false, "SysEx terlalu panjang. Maksimum 120 byte.")
+    }
     return Pair(true, null)
 }
 
