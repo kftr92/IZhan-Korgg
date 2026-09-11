@@ -792,6 +792,9 @@ fun MidiControllerApp(viewModel: MainViewModel) {
         LaunchedEffect(preset.triggerNote) {
             triggerNoteState = preset.triggerNote
         }
+        LaunchedEffect(preset.midiChannel) {
+            midiChannelState = preset.midiChannel
+        }
 
         DisposableEffect(Unit) {
             onDispose {

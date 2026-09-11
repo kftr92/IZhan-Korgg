@@ -101,6 +101,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _midiLearningPadIndex = MutableStateFlow<Int?>(null)
     val midiLearningPadIndex: StateFlow<Int?> = _midiLearningPadIndex.asStateFlow()
 
+    @Volatile
+    private var lastMidiLearnTimestamp: Long = 0L
+    @Volatile
+    private var lastLearnedNoteOrCc: Int = -1
+
     private var esp32DumpJob: kotlinx.coroutines.Job? = null
 
     init {
@@ -144,16 +149,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             midiController.esp32IncomingSelectSlot.collect { rxSlot ->
-                if (rxSlot != null && rxSlot in 0..127) {
-                    val currentList = _soundPresets.value.toMutableList()
-                    while (currentList.size <= rxSlot) {
-                        currentList.add(SoundPreset("Sound ${currentList.size + 1}", 0, 0, currentList.size, "", "Prog"))
-                    }
-                    if (currentList.size != _soundPresets.value.size) {
-                        _soundPresets.value = currentList
-                        saveConfiguration(_currentConfigName.value)
-                    }
-
+                if (_midiLearningPadIndex.value != null || System.currentTimeMillis() - lastMidiLearnTimestamp < 1000L) {
+                    // Ignore incoming select slot when MIDI Learn is active or immediately following MIDI Learn
+                    return@collect
+                }
+                if (rxSlot != null && rxSlot in _soundPresets.value.indices) {
                     _selectedPresetIndex.value = rxSlot
                     _activeInputTriggerPadIndex.value = rxSlot
                     val slotNumber = rxSlot + 1
@@ -185,6 +185,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleEsp32SlotDump(dump: Esp32SlotDump) {
+        if (_midiLearningPadIndex.value != null || System.currentTimeMillis() - lastMidiLearnTimestamp < 1000L) return
         val slotIdx = dump.slotIndex
         if (slotIdx !in 0..127) return
         _isSyncingFromEsp32.value = true
@@ -233,6 +234,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleEsp32SlotName(nameRx: Esp32SlotNameRx) {
+        if (_midiLearningPadIndex.value != null || System.currentTimeMillis() - lastMidiLearnTimestamp < 1000L) return
         val slotIdx = nameRx.slotIndex
         if (slotIdx !in 0..127) return
         _isSyncingFromEsp32.value = true
@@ -284,31 +286,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // Check if MIDI Learn is currently listening for a pad
         val learningPadIdx = _midiLearningPadIndex.value
-        if (learningPadIdx != null && learningPadIdx in presets.indices) {
-            if (event.type == MidiEventType.NOTE_ON && event.velocityOrVal > 0) {
-                val learnedNote = event.noteOrPc
-                val targetPreset = presets[learningPadIdx]
-                val updated = targetPreset.copy(triggerNote = learnedNote)
-                updatePreset(learningPadIdx, updated)
-                val slotNumber = learningPadIdx + 1
-                Log.d("MainViewModel", "[MIDI LEARN] NOTE=$learnedNote")
-                Log.d("MainViewModel", "[MIDI LEARN] SLOT=$slotNumber")
-                midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, "[MIDI LEARN] NOTE=$learnedNote\n[MIDI LEARN] SLOT=$slotNumber", "")
-                _lastMidiInputInfo.value = "Learned Note $learnedNote for Slot $slotNumber"
-                _midiLearningPadIndex.value = null
-                return
-            } else if (event.type == MidiEventType.CONTROL_CHANGE && event.velocityOrVal > 0) {
-                val learnedCc = event.noteOrPc
-                val targetPreset = presets[learningPadIdx]
-                val updated = targetPreset.copy(triggerNote = learnedCc)
-                updatePreset(learningPadIdx, updated)
-                val slotNumber = learningPadIdx + 1
-                Log.d("MainViewModel", "[MIDI LEARN] CC=$learnedCc")
-                Log.d("MainViewModel", "[MIDI LEARN] SLOT=$slotNumber")
-                midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, "[MIDI LEARN] CC=$learnedCc\n[MIDI LEARN] SLOT=$slotNumber", "")
-                _lastMidiInputInfo.value = "Learned CC $learnedCc for Slot $slotNumber"
-                _midiLearningPadIndex.value = null
-                return
+        if (learningPadIdx != null) {
+            if (learningPadIdx in presets.indices) {
+                if (event.type == MidiEventType.NOTE_ON && event.velocityOrVal > 0) {
+                    val learnedNote = event.noteOrPc
+                    val learnedChannel = event.channel
+                    val targetPreset = presets[learningPadIdx]
+                    val updated = targetPreset.copy(triggerNote = learnedNote, midiChannel = learnedChannel)
+                    updatePreset(learningPadIdx, updated, syncToEsp32 = false)
+                    val slotNumber = learningPadIdx + 1
+                    Log.d("MainViewModel", "[MIDI LEARN] NOTE=$learnedNote CH=${learnedChannel + 1}")
+                    Log.d("MainViewModel", "[MIDI LEARN] SLOT=$slotNumber")
+                    midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, "[MIDI LEARN] NOTE=$learnedNote CH=${learnedChannel + 1}\n[MIDI LEARN] SLOT=$slotNumber", "")
+                    _lastMidiInputInfo.value = "Learned Note $learnedNote for Slot $slotNumber"
+                    lastMidiLearnTimestamp = System.currentTimeMillis()
+                    lastLearnedNoteOrCc = learnedNote
+                    _midiLearningPadIndex.value = null
+                } else if (event.type == MidiEventType.CONTROL_CHANGE && event.velocityOrVal > 0) {
+                    val learnedCc = event.noteOrPc
+                    val learnedChannel = event.channel
+                    val targetPreset = presets[learningPadIdx]
+                    val updated = targetPreset.copy(triggerNote = learnedCc, midiChannel = learnedChannel)
+                    updatePreset(learningPadIdx, updated, syncToEsp32 = false)
+                    val slotNumber = learningPadIdx + 1
+                    Log.d("MainViewModel", "[MIDI LEARN] CC=$learnedCc CH=${learnedChannel + 1}")
+                    Log.d("MainViewModel", "[MIDI LEARN] SLOT=$slotNumber")
+                    midiController.logTraffic(MidiTrafficLog.Direction.SYSTEM, "[MIDI LEARN] CC=$learnedCc CH=${learnedChannel + 1}\n[MIDI LEARN] SLOT=$slotNumber", "")
+                    _lastMidiInputInfo.value = "Learned CC $learnedCc for Slot $slotNumber"
+                    lastMidiLearnTimestamp = System.currentTimeMillis()
+                    lastLearnedNoteOrCc = learnedCc
+                    _midiLearningPadIndex.value = null
+                }
+            }
+            // CRITICAL: Consume ALL MIDI events while MIDI Learn is active (Note Off, Note On vel=0, CC val=0, etc.)
+            // Never propagate to normal MIDI handling, slot triggering, or slot creation!
+            return
+        }
+
+        // Consume trailing Note Off or Note On with velocity 0 immediately following a successful MIDI Learn
+        if (System.currentTimeMillis() - lastMidiLearnTimestamp < 600L) {
+            if (event.type == MidiEventType.NOTE_OFF || (event.type == MidiEventType.NOTE_ON && event.velocityOrVal == 0)) {
+                if (event.noteOrPc == lastLearnedNoteOrCc) {
+                    return
+                }
             }
         }
 
